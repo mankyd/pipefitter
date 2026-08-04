@@ -42,7 +42,7 @@ export function defaultEnd() {
     Fw: 5, Ft: 2.5, Fn: 4, Fh: 3,
     Bh: 1.2, Bn: 3, Bp: 6,
     Tn: 1, Tw: 24, Th: 1.5, Tf: 0.4,
-    FitSide: 'inside', FitL: 8, FitTol: 0.4, FitChX: 1.2, FitChY: 0.8,
+    FitSide: 'outside', FitL: 8, FitTol: 0.4, FitChX: 1.2, FitChY: 0.8,
   };
 }
 export function defaultBend() {
@@ -78,7 +78,7 @@ function normEnd(raw) {
   const d = defaultEnd();
   const e = { type: END_TYPES.includes(raw && raw.type) ? raw.type : 'plain' };
   for (const k of Object.keys(END_LIMITS)) e[k] = cnum(raw ? raw[k] : undefined, END_LIMITS[k], END_WHOLE.has(k), d[k]);
-  e.FitSide = (raw && raw.FitSide === 'outside') ? 'outside' : 'inside';
+  e.FitSide = (raw && raw.FitSide === 'inside') ? 'inside' : 'outside';
   return e;
 }
 

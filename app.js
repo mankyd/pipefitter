@@ -946,19 +946,32 @@ function updatePanelValues(groups) {
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────────
+// Below this viewport width there isn't room for a side panel, so it's forced
+// below the viewer regardless of the user's choice (which is remembered and
+// restored once the window is wide enough again).
+const FORCE_BELOW_MAXWIDTH = 900;
+const effectiveLayout = () => (window.innerWidth < FORCE_BELOW_MAXWIDTH ? 'bottom' : state.layout);
+
+let appliedLayout = null;
 function applyLayout() {
-  const lay = state.layout;
+  const lay = effectiveLayout();
   el.body.style.flexDirection = lay === 'right' ? 'row-reverse'
     : lay === 'bottom' ? 'column-reverse' : 'row';
   el.panel.style.width = lay === 'bottom' ? '100%' : '316px';
   el.panel.style.height = lay === 'bottom' ? '258px' : '100%';
   el.panelGrid.style.gridAutoFlow = lay === 'bottom' ? 'column' : 'row';
   el.panelGrid.style.gridAutoColumns = lay === 'bottom' ? 'minmax(236px, 1fr)' : 'auto';
+  // The panel is only forced below (there's no manual "below" option), so the
+  // left/right switcher is irrelevant then — hide it.
+  el.layoutSwitch.style.display = lay === 'bottom' ? 'none' : '';
   el.layoutSwitch.querySelectorAll('button').forEach((btn) => {
     const active = btn.getAttribute('data-layout') === lay;
     btn.classList.toggle('btn-primary', active);
     btn.classList.toggle('btn-ghost', !active);
   });
+  // A change in the effective layout (e.g. crossing the width threshold) reshapes
+  // the viewer, so re-frame the part to fit it.
+  if (lay !== appliedLayout) { appliedLayout = lay; framed = false; }
 }
 
 function applyUnits() {
@@ -1451,6 +1464,7 @@ function applyViewOffset() {
 }
 
 function onResize() {
+  applyLayout();   // may switch to/from the forced 'below' layout as the width crosses the threshold
   const host = el.stage;
   if (!host || !renderer) return;
   const w = host.clientWidth, h = host.clientHeight;
@@ -1461,7 +1475,7 @@ function onResize() {
   camera.aspect = w / h;
   applyViewOffset();
   camera.updateProjectionMatrix();
-  draw();
+  if (!framed) syncMesh(); else draw();   // re-fit the part when the layout just changed
   drawSchematic();
 }
 

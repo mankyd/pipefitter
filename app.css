@@ -314,6 +314,12 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   bottom: 16.8px; right: 16.8px;
   display: flex; flex-direction: row; align-items: flex-end; gap: 11.2px;
 }
+/* Warnings sit under the camera controls in the top-right stack. */
+.overlay-tr .notes:empty { display: none; }
+.overlay-tr .notes {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 5.6px;
+  margin-top: 8.4px;
+}
 .coffee { display: block; line-height: 0; }
 .coffee img { display: block; }
 .copyright {
@@ -326,17 +332,27 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .br-controls {
   display: flex; flex-direction: column; align-items: flex-end; gap: 8.4px;
 }
-.overlay-br .hint {
+.br-controls .hint {
   font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--color-neutral-700); text-align: right; line-height: 1.5;
 }
-.overlay-br .btn-reset {
-  padding: 5px 11px; font-size: 11px; white-space: nowrap;
+.br-controls .btn-reset {
+  padding: 4px 9px; font-size: 11px; white-space: nowrap;
   background: color-mix(in srgb, var(--color-bg) 78%, transparent);
   -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
 }
-.view-presets { display: flex; gap: 6px; }
-.overlay-br .view-btn {
+.view-presets { display: flex; align-items: center; gap: 6px; }
+/* Vertical rule separating the view presets from the Reset button. */
+.view-divider {
+  align-self: stretch; width: 1px; margin: 2px 3px;
+  background: var(--color-neutral-800);
+}
+/* On narrow screens the preset views (and their divider) drop out, leaving just
+   Reset view. */
+@media (max-width: 480px) {
+  .view-presets .view-btn, .view-divider { display: none; }
+}
+.br-controls .view-btn {
   padding: 4px 9px; font-size: 11px; white-space: nowrap;
   background: color-mix(in srgb, var(--color-bg) 78%, transparent);
   -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
@@ -376,6 +392,18 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 }
 .schematic-reset[hidden] { display: none; }
 .viewer.swapped .schematic-reset { z-index: 6; }
+
+/* On narrow screens the docked card collapses to just its caption (title +
+   expand button); expanding it still shows the full drawing. */
+@media (max-width: 590px) {
+  .viewer:not(.swapped) .schematic { width: auto; }
+  .viewer:not(.swapped) .schematic-cap { border-bottom: 0; gap: 14px; }
+  .viewer:not(.swapped) .schematic-canvas,
+  .viewer:not(.swapped) .schematic-reset { display: none; }
+}
+/* Lifted above the copyright/coffee row only when JS detects the docked card
+   would otherwise overlap it (see updateSchematicPlacement). */
+.viewer:not(.swapped) .schematic.raised { bottom: 55px; }
 
 /* ── Swapped: diagram fills the viewer, 3D render is hidden ─────────────────── */
 .viewer.swapped .schematic {

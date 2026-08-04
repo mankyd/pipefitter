@@ -31,6 +31,8 @@ const el = {
   notes: document.getElementById('notes'),
   diagram: document.getElementById('diagram'),
   diagramReset: document.getElementById('btn-diagram-reset'),
+  schematic: document.getElementById('schematic'),
+  overlayBr: document.querySelector('.overlay-br'),
   viewer: document.getElementById('viewer'),
   expand: document.getElementById('btn-expand'),
 };
@@ -751,6 +753,23 @@ const resetDiagramView = () => {
 const drawSchematic = () => {
   drawDiagram(el.diagram, cachedG, hoveredSection, swapped ? 64 : 0, state.units, diagramView);
 };
+
+// Lift the docked schematic card above the copyright/coffee row, but only when
+// the two would actually overlap (they're at opposite bottom corners, so this
+// only happens once the viewport is narrow enough for them to meet). Measured
+// rather than keyed off a fixed breakpoint so the card sits low whenever there's
+// room. No-op while expanded — the swapped card fills the viewer.
+function updateSchematicPlacement() {
+  const card = el.schematic, br = el.overlayBr;
+  if (!card) return;
+  card.classList.remove('raised');   // always measure from the natural (low) position
+  if (swapped || !br) return;
+  const a = card.getBoundingClientRect(), b = br.getBoundingClientRect();
+  const GAP = 12;
+  const overlap = a.right + GAP > b.left && a.left < b.right + GAP &&
+                  a.bottom > b.top && a.top < b.bottom;
+  if (overlap) card.classList.add('raised');
+}
 
 function h(tag, cls, attrs) {
   const node = document.createElement(tag);
@@ -1484,6 +1503,7 @@ function onResize() {
   // function returns early. Skipping it there let the canvas bitmap get
   // stretched non-uniformly by CSS to fill the new box.
   drawSchematic();
+  updateSchematicPlacement();   // raise the docked card only when it would hit the copyright
   const host = el.stage;
   if (!host || !renderer) return;
   const w = host.clientWidth, h = host.clientHeight;
@@ -1542,6 +1562,7 @@ function applySwap(on) {
   resetDiagramView();  // always open (and close) at a clean fit; zoom/pan is expanded-only
   onResize();          // on restore, re-fit the 3D renderer (it's hidden while expanded)
   drawSchematic();     // redraw the diagram at its new size (onResize bails while the stage is hidden)
+  updateSchematicPlacement();
 }
 // Swap the 2D diagram and the 3D view, and persist the choice to the URL so a
 // refresh or copied link opens in the same state.

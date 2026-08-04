@@ -80,23 +80,26 @@
           <div class="overlay-mesh" id="mesh"></div>
         </div>
 
-        <div class="overlay overlay-tr" id="notes"></div>
-
-        <div class="overlay overlay-br">
-          <span class="copyright">© 2026 Dave Mankoff</span>
-          <a class="coffee" href="https://www.buymeacoffee.com/mankyd" target="_blank" rel="noopener">
-            <img src="assets/buymeacoffee.png" alt="Buy Me a Coffee" style="height: 30px !important; width: 108.5px !important;">
-          </a>
+        <div class="overlay overlay-tr">
           <div class="br-controls">
             <div class="view-presets">
               <button class="btn btn-secondary view-btn" type="button" data-view="left" title="Left view">Left</button>
               <button class="btn btn-secondary view-btn" type="button" data-view="right" title="Right view">Right</button>
               <button class="btn btn-secondary view-btn" type="button" data-view="top" title="Top view">Top</button>
               <button class="btn btn-secondary view-btn" type="button" data-view="side" title="Side view">Side</button>
+              <span class="view-divider" aria-hidden="true"></span>
+              <button class="btn btn-secondary btn-reset" type="button" id="btn-reset">Reset view</button>
             </div>
-            <button class="btn btn-secondary btn-reset" type="button" id="btn-reset">Reset view</button>
             <div class="hint">drag&nbsp;· orbit<br>shift-drag&nbsp;· pan<br>scroll&nbsp;· zoom</div>
           </div>
+          <div class="notes" id="notes"></div>
+        </div>
+
+        <div class="overlay overlay-br">
+          <span class="copyright">© 2026 Dave Mankoff</span>
+          <a class="coffee" href="https://www.buymeacoffee.com/mankyd" target="_blank" rel="noopener">
+            <img src="assets/buymeacoffee.png" alt="Buy Me a Coffee" style="height: 30px !important; width: 108.5px !important;">
+          </a>
         </div>
 
         <figure class="schematic" id="schematic">

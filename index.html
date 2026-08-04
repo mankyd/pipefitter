@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipe Fitter — Parametric Designer for Connecting Two Tubes Together</title>
+  <meta name="description" content="Generate a 3D-printable pipe adapter from parameters and export it as a binary STL.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23161826'/><path d='M2 6h5V4l3 4-3 4v-2H2zM14 10H9V8l-3-0' fill='none' stroke='%239184d9' stroke-width='1.4'/><rect x='2' y='6.5' width='5' height='3' fill='%239184d9'/><rect x='9' y='6.5' width='5' height='3' fill='%239184d9'/></svg>">
+  <link rel="stylesheet" href="fonts/fonts.css">
+  <link rel="stylesheet" href="dark.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-title">
+          <span class="brand-name">Pipe Fitter</span>
+          <span class="brand-sub">Parametric Designer for Connecting Two Tubes Together</span>
+        </div>
+        <span class="brand-summary" id="summary"></span>
+      </div>
+
+      <div class="layout-switch" id="layout-switch">
+        <button class="btn" type="button" data-layout="left">Panel left</button>
+        <button class="btn" type="button" data-layout="right">Panel right</button>
+        <button class="btn" type="button" data-layout="bottom">Panel below</button>
+      </div>
+
+      <div class="units-switch" id="units-switch" title="Display units — geometry is always stored in mm">
+        <button class="btn" type="button" data-units="mm">mm</button>
+        <button class="btn" type="button" data-units="in">in</button>
+      </div>
+
+      <div class="actions">
+        <div class="menu menu-render">
+          <button class="btn btn-secondary menu-trigger" type="button" aria-haspopup="true">Render ▾</button>
+          <div class="menu-list" role="menu">
+            <button class="menu-item" type="button" data-style="steel">Steel</button>
+            <button class="menu-item" type="button" data-style="resin">Resin</button>
+            <button class="menu-item" type="button" data-style="copper">Copper</button>
+            <button class="menu-item" type="button" data-style="clay">Clay</button>
+            <button class="menu-item" type="button" data-style="wire">Wireframe</button>
+            <button class="menu-item" type="button" data-style="normals">Normals</button>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-copy" type="button" id="btn-copy">Copy link</button>
+        <button class="btn btn-secondary btn-undo" type="button" id="btn-undo" title="Undo (⌘Z)">Undo</button>
+        <button class="btn btn-secondary btn-redo" type="button" id="btn-redo" title="Redo (⇧⌘Z)">Redo</button>
+        <div class="menu">
+          <button class="btn btn-primary menu-trigger" type="button" aria-haspopup="true">Download STL ▾</button>
+          <div class="menu-list" role="menu">
+            <button class="menu-item" type="button" data-dl="stl" data-orient="asis">Download As Is</button>
+            <button class="menu-item" type="button" data-dl="stl" data-orient="left">Orient on First Face</button>
+            <button class="menu-item" type="button" data-dl="stl" data-orient="right">Orient on Last Face</button>
+          </div>
+        </div>
+        <div class="menu">
+          <button class="btn btn-primary menu-trigger" type="button" aria-haspopup="true">Download 3MF ▾</button>
+          <div class="menu-list" role="menu">
+            <button class="menu-item" type="button" data-dl="3mf" data-orient="asis">Download As Is</button>
+            <button class="menu-item" type="button" data-dl="3mf" data-orient="left">Orient on First Face</button>
+            <button class="menu-item" type="button" data-dl="3mf" data-orient="right">Orient on Last Face</button>
+          </div>
+        </div>
+        <button class="btn btn-secondary btn-help" type="button" id="btn-help" title="Help" aria-haspopup="dialog">?</button>
+      </div>
+    </header>
+
+    <div class="body" id="body">
+      <aside class="pnl" id="panel">
+        <div class="panel-grid" id="panel-grid"></div>
+      </aside>
+
+      <main class="viewer" id="viewer">
+        <div class="stage" id="stage"></div>
+
+        <div class="overlay overlay-tl">
+          <div class="overlay-kicker">Bounding box</div>
+          <div class="overlay-bbox" id="bbox">—</div>
+          <div class="overlay-mesh" id="mesh"></div>
+        </div>
+
+        <div class="overlay overlay-tr" id="notes"></div>
+
+        <div class="overlay overlay-br">
+          <span class="copyright">© 2026 Dave Mankoff</span>
+          <a class="coffee" href="https://www.buymeacoffee.com/mankyd" target="_blank" rel="noopener">
+            <img src="assets/buymeacoffee.png" alt="Buy Me a Coffee" style="height: 30px !important; width: 108.5px !important;">
+          </a>
+          <div class="br-controls">
+            <div class="view-presets">
+              <button class="btn btn-secondary view-btn" type="button" data-view="left" title="Left view">Left</button>
+              <button class="btn btn-secondary view-btn" type="button" data-view="right" title="Right view">Right</button>
+              <button class="btn btn-secondary view-btn" type="button" data-view="top" title="Top view">Top</button>
+              <button class="btn btn-secondary view-btn" type="button" data-view="side" title="Side view">Side</button>
+            </div>
+            <button class="btn btn-secondary btn-reset" type="button" id="btn-reset">Reset view</button>
+            <div class="hint">drag&nbsp;· orbit<br>shift-drag&nbsp;· pan<br>scroll&nbsp;· zoom</div>
+          </div>
+        </div>
+
+        <figure class="schematic" id="schematic">
+          <figcaption class="schematic-cap">
+            <span>Cross Section · bend plane</span>
+            <button class="schematic-expand" id="btn-expand" type="button" title="Expand diagram" aria-label="Expand diagram">⛶</button>
+          </figcaption>
+          <canvas class="schematic-canvas" id="diagram"></canvas>
+        </figure>
+      </main>
+    </div>
+  </div>
+
+  <div class="help-backdrop" id="help-backdrop" hidden>
+    <div class="help-dialog" role="dialog" aria-modal="true" aria-label="Help">
+      <button class="help-close" id="help-close" type="button" aria-label="Close help">✕</button>
+      <div class="markdown" id="help-body"></div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

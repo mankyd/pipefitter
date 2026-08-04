@@ -1,0 +1,383 @@
+/* Pipe Fitter — application layout and control styling.
+   Design tokens and component classes come from dark.css; this sheet holds
+   the app shell, the range-input skin, and the viewer overlays. */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+}
+a { color: var(--color-accent-300); text-decoration: none; }
+a:hover { color: var(--color-accent-200); }
+::selection { background: var(--color-accent-800); }
+
+/* ── Range inputs ─────────────────────────────────────────────────────────── */
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 2px; margin: 0;
+  background: var(--color-neutral-800); border-radius: 2px; outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--color-bg); border: 1.5px solid var(--color-accent);
+  cursor: ew-resize;
+}
+input[type=range]::-webkit-slider-thumb:hover { background: var(--color-accent-800); }
+input[type=range]::-moz-range-thumb {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--color-bg); border: 1.5px solid var(--color-accent);
+  cursor: ew-resize;
+}
+input[type=range]:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
+
+/* ── App shell ────────────────────────────────────────────────────────────── */
+.app {
+  height: 100vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; gap: 22.4px;
+  padding: 11.2px 16.8px;
+  border-bottom: 1px solid var(--color-neutral-900);
+  flex: 0 0 auto;
+}
+.brand {
+  display: flex; flex-direction: column; gap: 1px;
+  min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap;
+}
+.brand-title {
+  display: flex; align-items: baseline; gap: 8.4px;
+  white-space: nowrap; min-width: 0; overflow: hidden;
+}
+.brand-name {
+  font-family: var(--font-heading); font-weight: 500;
+  font-size: 15px; letter-spacing: 0.02em;
+}
+.brand-sub { font-size: 11px; color: var(--color-neutral-600); }
+.brand-summary {
+  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+  color: var(--color-neutral-700); letter-spacing: 0.04em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.layout-switch, .units-switch {
+  display: flex; gap: 2.8px; padding: 2.8px;
+  border: 1px solid var(--color-neutral-900); border-radius: var(--radius-md);
+  flex: 0 0 auto;
+}
+.layout-switch .btn, .units-switch .btn {
+  padding: 4px 9px; font-size: 11px;
+  border-radius: var(--radius-sm); white-space: nowrap;
+}
+
+.actions { display: flex; gap: 8.4px; flex: 0 0 auto; }
+.actions .btn { white-space: nowrap; flex: 0 0 auto; font-size: 12px; }
+.actions .btn-copy { padding: 6px 12px; }
+.actions .btn-undo, .actions .btn-redo { padding: 6px 11px; }
+.actions .menu-trigger { padding: 6px 12px; }
+.actions .btn-help {
+  width: 28px; padding: 6px 0; font-size: 13px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* ── Download hover menus ─────────────────────────────────────────────────── */
+.menu { position: relative; flex: 0 0 auto; }
+.menu-trigger { white-space: nowrap; }
+.menu-list {
+  position: absolute; top: 100%; right: 0; z-index: 40;
+  display: none; flex-direction: column; min-width: 100%;
+  margin-top: 4px; padding: 4px; gap: 2px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-md);
+}
+/* A transparent bridge over the 4px gap keeps hover continuous. */
+.menu-list::before { content: ''; position: absolute; left: 0; right: 0; top: -4px; height: 4px; }
+.menu:hover .menu-list, .menu:focus-within .menu-list { display: flex; }
+.menu-item {
+  display: block; width: 100%; text-align: left; white-space: nowrap;
+  padding: 6px 10px; font-family: var(--font-body); font-size: 12px;
+  color: var(--color-neutral-200); background: none; border: 0;
+  border-radius: var(--radius-sm); cursor: pointer;
+}
+.menu-item:hover, .menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-100); outline: none;
+}
+.menu-item.is-active { color: var(--color-accent-200); }
+.menu-item.is-active::after { content: '✓'; float: right; margin-left: 14px; opacity: 0.85; }
+/* Wide enough that the longest option plus its ✓ stays on one line. */
+.menu-render .menu-list { min-width: 132px; }
+
+/* ── Help modal ───────────────────────────────────────────────────────────── */
+.help-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center; padding: 22.4px;
+  background: color-mix(in srgb, var(--color-neutral-900) 55%, transparent);
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+}
+.help-backdrop[hidden] { display: none; }
+.help-dialog {
+  position: relative;
+  width: min(560px, 100%); max-height: 80vh; overflow: auto;
+  padding: 22.4px 28px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-neutral-800);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.help-dialog::-webkit-scrollbar { width: 9px; }
+.help-dialog::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border-radius: 5px; }
+.help-close {
+  position: absolute; top: 11.2px; right: 11.2px;
+  width: 26px; height: 26px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: 0; border-radius: var(--radius-sm);
+  color: var(--color-neutral-500); font-size: 13px; cursor: pointer;
+}
+.help-close:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); color: var(--color-neutral-200); }
+
+/* Rendered markdown, themed to match the app */
+.markdown { color: var(--color-neutral-300); font-size: 13.5px; line-height: 1.6; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1 {
+  font-family: var(--font-heading); font-weight: 500; font-size: 20px;
+  letter-spacing: 0.01em; color: var(--color-neutral-100); margin: 0 0 12px;
+}
+.markdown h2 {
+  font-family: var(--font-heading); font-weight: 500; font-size: 16px;
+  color: var(--color-neutral-200); margin: 18px 0 8px;
+}
+.markdown h3 {
+  font-family: var(--font-heading); font-weight: 500; font-size: 14px;
+  color: var(--color-neutral-200); margin: 14px 0 6px;
+}
+.markdown p { margin: 0 0 10px; }
+.markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 20px; }
+.markdown li { margin: 2px 0; }
+.markdown a { color: var(--color-accent-300); }
+.markdown a:hover { color: var(--color-accent-200); }
+.markdown strong { color: var(--color-neutral-100); font-weight: 600; }
+.markdown code {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.9em;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  padding: 1px 5px; border-radius: 4px; color: var(--color-neutral-200);
+}
+.markdown blockquote {
+  margin: 0 0 10px; padding-left: 12px;
+  border-left: 2px solid var(--color-neutral-700); color: var(--color-neutral-400);
+}
+.markdown hr { border: 0; height: 1px; background: var(--color-neutral-800); margin: 16px 0; }
+
+/* ── Body split ───────────────────────────────────────────────────────────── */
+.body { flex: 1 1 auto; display: flex; min-height: 0; }
+
+/* ── Control panel ────────────────────────────────────────────────────────── */
+.pnl {
+  flex: 0 0 auto; overflow: auto;
+  border: 1px solid var(--color-neutral-900);
+  background: linear-gradient(180deg, #1a1c29, var(--color-bg));
+}
+.pnl::-webkit-scrollbar { width: 9px; }
+.pnl::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border-radius: 5px; }
+.panel-grid { display: grid; gap: 22.4px; padding: 16.8px; }
+
+.group { display: flex; flex-direction: column; gap: 2.8px; min-width: 0; }
+.group-head {
+  display: flex; align-items: center; gap: 8.4px; padding-bottom: 5.6px;
+}
+.group-toggle {
+  display: flex; align-items: center; gap: 8.4px; min-width: 0;
+  padding: 0; margin: 0; border: 0; background: none;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.group-caret {
+  font-size: 9px; line-height: 1; color: var(--color-neutral-600);
+  transition: transform 0.12s ease;
+}
+.group.collapsed .group-caret { transform: rotate(-90deg); }
+.group-toggle:hover .group-title { color: var(--color-neutral-100); }
+.group-toggle:hover .group-caret { color: var(--color-neutral-400); }
+.group-body { display: flex; flex-direction: column; gap: 2.8px; }
+.group.collapsed .group-body { display: none; }
+.group-tag {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--color-accent); letter-spacing: 0.1em;
+}
+.group-title {
+  font-family: var(--font-heading); font-weight: 500;
+  font-size: 12.5px; color: var(--color-neutral-300);
+}
+.group-rule {
+  flex: 1 1 auto; height: 1px;
+  background: linear-gradient(90deg, var(--color-neutral-800), transparent);
+}
+.group-mirror {
+  padding: 2px 7px; font-size: 10.5px;
+  white-space: nowrap; border-radius: var(--radius-sm);
+}
+
+.presets {
+  display: flex; flex-wrap: wrap; gap: 5.6px; padding: 2px 0 6px;
+}
+.presets .btn {
+  padding: 3px 10px; font-size: 11px; border-radius: var(--radius-sm);
+}
+
+.field-actions { display: flex; flex-wrap: wrap; gap: 5.6px; padding: 2px 0 4px; }
+.field-action { padding: 3px 9px; font-size: 10.5px; white-space: nowrap; }
+.field-readout {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--color-neutral-500); text-align: right; padding: 0 0 2px;
+}
+.field-toggle {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer;
+  font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--color-neutral-500);
+}
+.field-toggle input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--color-accent);
+}
+.field-toggle span { margin-top: 3px; }
+
+.field { display: grid; gap: 4px; padding: 4px 0; }
+.field > label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8.4px; margin: 0;
+}
+.field-name {
+  font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--color-neutral-500);
+}
+.field-hint {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--color-neutral-700);
+}
+.field-enum { width: 100%; min-height: 30px; padding: 4px 7px; font-size: 12.5px; }
+.field-num {
+  display: grid; grid-template-columns: 1fr 56px; gap: 11.2px; align-items: center;
+}
+.field-num-input {
+  width: 100%; min-height: 28px; padding: 3px 5px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11.5px; text-align: right;
+}
+
+/* ── Viewer ───────────────────────────────────────────────────────────────── */
+.viewer {
+  flex: 1 1 auto; position: relative; min-width: 0; min-height: 0;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 15%, #20222f 0%, var(--color-bg) 70%);
+}
+.stage { position: absolute; inset: 0; cursor: grab; z-index: 1; }
+.stage canvas { display: block; }
+
+.overlay { position: absolute; z-index: 3; }
+.overlay-tl {
+  top: 16.8px; left: 16.8px;
+  display: flex; flex-direction: column; gap: 5.6px; pointer-events: none;
+}
+.overlay-kicker {
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--color-neutral-600);
+}
+.overlay-bbox {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
+  color: var(--color-neutral-200);
+}
+.overlay-mesh {
+  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+  color: var(--color-neutral-700);
+}
+.overlay-tr {
+  top: 16.8px; right: 16.8px;
+  display: flex; flex-direction: column; gap: 5.6px;
+  align-items: flex-end; max-width: 300px;
+}
+.note {
+  font-size: 11px; line-height: 1.35; text-align: right;
+  color: var(--color-accent-300); background: var(--color-accent-900);
+  border: 1px solid var(--color-accent-800); border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+.overlay-br {
+  bottom: 16.8px; right: 16.8px;
+  display: flex; flex-direction: row; align-items: flex-end; gap: 11.2px;
+}
+.coffee { display: block; line-height: 0; }
+.coffee img { display: block; }
+.copyright {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--color-neutral-700); white-space: nowrap;
+  /* Bottom-aligned with the coffee button and given its height, so the text
+     centres against the button rather than the taller controls stack. */
+  align-self: flex-end; height: 30px; line-height: 30px;
+}
+.br-controls {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8.4px;
+}
+.overlay-br .hint {
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--color-neutral-700); text-align: right; line-height: 1.5;
+}
+.overlay-br .btn-reset {
+  padding: 5px 11px; font-size: 11px; white-space: nowrap;
+  background: color-mix(in srgb, var(--color-bg) 78%, transparent);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+}
+.view-presets { display: flex; gap: 6px; }
+.overlay-br .view-btn {
+  padding: 4px 9px; font-size: 11px; white-space: nowrap;
+  background: color-mix(in srgb, var(--color-bg) 78%, transparent);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+}
+
+/* ── Schematic card ───────────────────────────────────────────────────────── */
+.schematic {
+  position: absolute; bottom: 16.8px; left: 16.8px; margin: 0;
+  width: 352px; z-index: 2;
+  border: 1px solid var(--color-neutral-800); border-radius: var(--radius-md);
+  background: #1b1d2b; box-shadow: var(--shadow-md); overflow: hidden;
+}
+.schematic-cap {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 9px; border-bottom: 1px solid var(--color-neutral-900);
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-neutral-600);
+}
+.schematic-expand {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  background: none; border: 0; border-radius: var(--radius-sm);
+  color: var(--color-neutral-500); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.schematic-expand:hover { color: var(--color-neutral-200); background: color-mix(in srgb, var(--color-text) 8%, transparent); }
+.schematic-expand.is-swapped { color: var(--color-accent-400); }
+.schematic-canvas { display: block; width: 100%; height: 226px; }
+
+/* ── Swapped: diagram fills the viewer, 3D render is hidden ─────────────────── */
+.viewer.swapped .schematic {
+  inset: 0; width: auto; z-index: 4;
+  border: 0; border-radius: 0; box-shadow: none;
+  display: flex; flex-direction: column;
+}
+/* min-height: 0 lets the canvas shrink to the flex area instead of its intrinsic
+   size. The drawing reserves space for the floating coffee button itself (the
+   bottomInset passed to drawDiagram), so the content clears it. */
+.viewer.swapped .schematic-canvas { flex: 1 1 auto; min-height: 0; height: auto; }
+.viewer.swapped .stage { display: none; }
+/* Let the coffee button float over the diagram; the 3D-view controls
+   (reset / orbit hint) don't apply while the 3D view is hidden. */
+.viewer.swapped .overlay-br { z-index: 5; }
+.viewer.swapped .br-controls { display: none; }

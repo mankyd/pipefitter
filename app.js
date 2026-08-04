@@ -30,6 +30,7 @@ const el = {
   mesh: document.getElementById('mesh'),
   notes: document.getElementById('notes'),
   diagram: document.getElementById('diagram'),
+  diagramReset: document.getElementById('btn-diagram-reset'),
   viewer: document.getElementById('viewer'),
   expand: document.getElementById('btn-expand'),
 };
@@ -732,10 +733,23 @@ const collapsedGroups = new Set();   // group tags whose body is collapsed (pers
 // Which pipe segment the pointer is over (drives the schematic highlight):
 // null, or { kind: 'section' | 'bend', index }.
 let hoveredSection = null;
+// User zoom/pan for the diagram (screen-space, on top of the base fit). Reset to
+// a fit whenever the diagram is expanded so it always opens framed.
+const diagramView = { zoom: 1, panX: 0, panY: 0 };
+// The view is "at default" when neither zoomed nor panned; the reset-view button
+// shows only when it is not. Call this after any change to diagramView.
+function syncDiagramReset() {
+  const atDefault = diagramView.zoom === 1 && diagramView.panX === 0 && diagramView.panY === 0;
+  if (el.diagramReset) el.diagramReset.hidden = atDefault;
+}
+const resetDiagramView = () => {
+  diagramView.zoom = 1; diagramView.panX = 0; diagramView.panY = 0;
+  syncDiagramReset();
+};
 // When expanded, reserve room at the bottom of the drawing for the floating
 // coffee button so the diagram content clears it.
 const drawSchematic = () => {
-  drawDiagram(el.diagram, cachedG, hoveredSection, swapped ? 64 : 0, state.units);
+  drawDiagram(el.diagram, cachedG, hoveredSection, swapped ? 64 : 0, state.units, diagramView);
 };
 
 function h(tag, cls, attrs) {
@@ -1465,6 +1479,11 @@ function applyViewOffset() {
 
 function onResize() {
   applyLayout();   // may switch to/from the forced 'below' layout as the width crosses the threshold
+  // Keep the diagram's backing store matched to its box on every resize —
+  // including while expanded, when the 3D stage below is hidden and this
+  // function returns early. Skipping it there let the canvas bitmap get
+  // stretched non-uniformly by CSS to fill the new box.
+  drawSchematic();
   const host = el.stage;
   if (!host || !renderer) return;
   const w = host.clientWidth, h = host.clientHeight;
@@ -1476,7 +1495,6 @@ function onResize() {
   applyViewOffset();
   camera.updateProjectionMatrix();
   if (!framed) syncMesh(); else draw();   // re-fit the part when the layout just changed
-  drawSchematic();
 }
 
 // Return the camera to its initial pose and re-enable auto-framing (which
@@ -1521,6 +1539,7 @@ function applySwap(on) {
   el.viewer.classList.toggle('swapped', swapped);
   el.expand.title = swapped ? 'Restore diagram' : 'Expand diagram';
   el.expand.classList.toggle('is-swapped', swapped);
+  resetDiagramView();  // always open (and close) at a clean fit; zoom/pan is expanded-only
   onResize();          // on restore, re-fit the 3D renderer (it's hidden while expanded)
   drawSchematic();     // redraw the diagram at its new size (onResize bails while the stage is hidden)
 }
@@ -1529,6 +1548,70 @@ function applySwap(on) {
 function toggleSwap() {
   applySwap(!swapped);
   writeHash(state.params);
+}
+
+// Zoom/pan on the diagram, in both the docked card and the expanded view. Both
+// are composed on top of the base fit in screen space (see drawDiagram's `view`),
+// so the maths here stays in CSS px and never has to know the world scale.
+const DIAGRAM_ZOOM_MIN = 0.6, DIAGRAM_ZOOM_MAX = 24;
+function bindDiagramControls(canvas) {
+  const localPt = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  };
+  // Zoom about the cursor: keep the point under the cursor fixed by adjusting the
+  // pan so cx = panX + zoom * baseX stays true across the zoom change.
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const [cx, cy] = localPt(e);
+    const prev = diagramView.zoom;
+    const next = Math.max(DIAGRAM_ZOOM_MIN, Math.min(DIAGRAM_ZOOM_MAX, prev * Math.exp(-e.deltaY * 0.0015)));
+    if (next === prev) return;
+    diagramView.panX = cx - (next / prev) * (cx - diagramView.panX);
+    diagramView.panY = cy - (next / prev) * (cy - diagramView.panY);
+    diagramView.zoom = next;
+    syncDiagramReset();
+    drawSchematic();
+  }, { passive: false });
+
+  // Drag to pan. Pointer capture keeps the drag alive off the canvas edge.
+  let dragging = false, lastX = 0, lastY = 0;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    [lastX, lastY] = localPt(e);
+    canvas.setPointerCapture(e.pointerId);
+    canvas.style.cursor = 'grabbing';
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const [x, y] = localPt(e);
+    diagramView.panX += x - lastX;
+    diagramView.panY += y - lastY;
+    lastX = x; lastY = y;
+    syncDiagramReset();
+    drawSchematic();
+  });
+  const endDrag = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    canvas.style.cursor = '';
+  };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  // Double-click snaps back to the fit.
+  canvas.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    resetDiagramView();
+    drawSchematic();
+  });
+
+  // A resize of the canvas box (e.g. the flex reflow on expand, or a viewport
+  // change while expanded) re-syncs the backing store so CSS never stretches the
+  // bitmap to fit.
+  new ResizeObserver(() => drawSchematic()).observe(canvas);
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────────
@@ -1580,6 +1663,8 @@ function init() {
     b.addEventListener('click', () => setView(b.getAttribute('data-view')));
   });
   el.expand.addEventListener('click', toggleSwap);
+  el.diagramReset.addEventListener('click', () => { resetDiagramView(); drawSchematic(); });
+  bindDiagramControls(el.diagram);
   el.help.addEventListener('click', openHelp);
   el.helpClose.addEventListener('click', closeHelp);
   el.helpBackdrop.addEventListener('click', (e) => { if (e.target === el.helpBackdrop) closeHelp(); });

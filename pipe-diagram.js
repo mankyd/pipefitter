@@ -13,10 +13,14 @@ const T = {
 };
 
 // `highlight` selects the hovered group to band: null, or { kind:'section'|'bend',
-// index } (an arclength span is derived from g.path). Returns { leftX, leftTopY }
-// — the screen position (CSS px, canvas-relative) of the pipe's left edge and the
-// top of its left end, so callers can line an overlay up with the drawing.
-export function drawDiagram(canvas, g, highlight, bottomInset, units) {
+// index } (an arclength span is derived from g.path). `view` is an optional
+// user zoom/pan applied on top of the base fit: { zoom, panX, panY } in screen
+// (CSS px) space, defaulting to identity — the drawing keeps its correct aspect
+// ratio at every zoom because the base fit uses a single uniform scale. Returns
+// { leftX, leftTopY } — the screen position (CSS px, canvas-relative) of the
+// pipe's left edge and the top of its left end, so callers can line an overlay
+// up with the drawing.
+export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   if (!canvas || !g) return null;
   // Dimension labels are converted for display only; the geometry is always mm.
   const inMode = units === 'in';
@@ -50,8 +54,14 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units) {
   const ox = (w - (maxX - minX) * k) / 2 - minX * k;
   // Centre vertically within [pad, h - pad - bi] (Y is flipped, so Y(maxY) is the top).
   const oy = pad + ((h - 2 * pad - bi) - (maxY - minY) * k) / 2 + maxY * k;
-  const X = (x) => ox + x * k;
-  const Y = (y) => oy - y * k;
+  // User zoom/pan rides on top of the base fit as a uniform screen-space
+  // transform, so the aspect ratio is preserved at every zoom level.
+  const zoom = (view && view.zoom) || 1;
+  const panX = (view && view.panX) || 0;
+  const panY = (view && view.panY) || 0;
+  const X = (x) => panX + zoom * (ox + x * k);
+  const Y = (y) => panY + zoom * (oy - y * k);
+  const kz = k * zoom;   // effective world→screen scale, for screen-px margins
 
   const poly = (list, close) => {
     ctx.beginPath();
@@ -90,7 +100,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units) {
     const idx = [];
     if (span) for (let i = 0; i < sO.length; i++) if (sO[i] >= span[0] - 1e-6 && sO[i] <= span[1] + 1e-6) idx.push(i);
     if (idx.length > 1) {
-      const mWorld = 9 / k; // margin beyond the pipe, world units (≈9 screen px)
+      const mWorld = 9 / kz; // margin beyond the pipe, world units (≈9 screen px)
       const topB = [], botB = [];
       for (const i of idx) {
         const t = g.silhouette.outer.top[i], b = g.silhouette.outer.bot[i];

@@ -242,7 +242,10 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
         const mid = face[Math.floor(face.length / 2)];
         const toC = [X(c[0]) - X(mid[0]), Y(c[1]) - Y(mid[1])];
         const L = Math.hypot(toC[0], toC[1]) || 1;
-        boxLabel(X(mid[0]) + (toC[0] / L) * 22, Y(mid[1]) + (toC[1] / L) * 22, tag + ' arc ' + nv(bd.l2) + uu, T.accent);
+        // Label the arc actually drawn (the traced inner face), not the requested
+        // l2 — the bend may have been lengthened to keep its inner wall thick.
+        const arcActual = Math.round(face.reduce((sum, q, k) => k ? sum + Math.hypot(q[0] - face[k - 1][0], q[1] - face[k - 1][1]) : 0, 0) * 10) / 10;
+        boxLabel(X(mid[0]) + (toC[0] / L) * 22, Y(mid[1]) + (toC[1] / L) * 22, tag + ' arc ' + nv(arcActual) + uu, T.accent);
 
         // Angle readout just outside the outer (convex) bend face at its midpoint.
         const outMid = outerArr[midIdx];
@@ -250,12 +253,15 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
         const aL = Math.hypot(away[0], away[1]) || 1;
         boxLabel(X(outMid[0]) + (away[0] / aL) * 15, Y(outMid[1]) + (away[1] / aL) * 15, Math.abs(bd.ang) + '°', T.center, '500 11px Inter, system-ui, sans-serif');
       }
-    } else if (bd.l2 > 0) {
-      // Straight transition (0 deg): a length tick along its axis.
-      if (!anyBend) tick(X(bd.sStart), baseY, X(bd.sEnd), baseY, tag + ' ' + nv(bd.l2) + uu);
+    } else if (bd.arcLen > 1e-6) {
+      // Straight transition (0 deg): a length tick along its axis. Label the
+      // length actually drawn (rounded to a tenth) — the reducer may have been
+      // lengthened past the requested l2 to keep its wall thick, and l2 can be 0.
+      const len = Math.round(bd.arcLen * 10) / 10;
+      if (!anyBend) tick(X(bd.sStart), baseY, X(bd.sEnd), baseY, tag + ' ' + nv(len) + uu);
       else {
         const v = [bd.t0[1], -bd.t0[0]], off = 10;
-        tick(X(bd.p0[0] - v[0] * off), Y(bd.p0[1] - v[1] * off), X(bd.p1[0] - v[0] * off), Y(bd.p1[1] - v[1] * off), tag + ' ' + nv(bd.l2) + uu);
+        tick(X(bd.p0[0] - v[0] * off), Y(bd.p0[1] - v[1] * off), X(bd.p1[0] - v[0] * off), Y(bd.p1[1] - v[1] * off), tag + ' ' + nv(len) + uu);
       }
     }
 

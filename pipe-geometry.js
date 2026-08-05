@@ -15,6 +15,13 @@ const round = (v, dp) => { const f = 10 ** dp; return Math.round(v * f) / f; };
 const smooth = (t) => t * t * (3 - 2 * t);
 const lerp = (a, b, t) => a + (b - a) * t;
 
+// Inner-bend thickness guard (see makePath): how thick the concave bend wall must
+// be, as a fraction of the attainable limit (the thinnest wall the bend carries;
+// perpendicular thickness only reaches that limit as R→∞), and how far the arc
+// may be stretched to get there, as a multiple of the outer-radius change Δr.
+const PERP_THICKNESS_FRACTION = 0.9;
+const PERP_ARC_CAP_MULT = 4;
+
 // ── Parameter limits ─────────────────────────────────────────────────────────
 export const SECTION_LIMITS = { id: [1, 120], w: [0.4, 20], l: [3, 200] };
 export const BEND_LIMITS = {
@@ -253,8 +260,36 @@ function makePath(p) {
       // B is the arc length along the OUTER surface on the inner side of the
       // bend; solve the centerline radius that produces exactly that length.
       const sol = bent ? solveBendRadius(tr, Math.abs(A), bd.l2) : { R: 0, clamped: false };
-      const R = sol.R;
-      const arcLen = bent ? R * Math.abs(A) : bd.l2;
+      let R = sol.R;
+      let arcLen = bent ? R * Math.abs(A) : bd.l2;
+      let faceClamped = sol.clamped;
+      // Keep the inner (concave) transition wall from being drawn impossibly thin.
+      // The bend owns the diameter/wall reduction, so a large Ø change packed into
+      // a short transition becomes a near-radial cliff whose PERPENDICULAR
+      // thickness (the real material, measured normal to the surface — not
+      // radially, and not the inner-face arc, which is inflated by radial travel)
+      // collapses toward zero. Lengthen the transition until that thickness
+      // reaches the wall it carries. This is expressed in the transition LENGTH so
+      // it works identically for a turning bend and a straight (0°) reducer: for a
+      // bend the length is the arc R·A, so a longer length is a larger R. The
+      // attainable limit is transitionMinWall (reached only as the length→∞), so
+      // aim at a fraction of it and cap the length so a shallow reduction can't
+      // balloon without bound. Length only ever grows, so a user's larger l2 is
+      // preserved.
+      let lenFloored = false;
+      const dR = transitionDeltaOuter(tr);
+      if (dR > 1e-6) {                                   // only reducing/expanding transitions are at risk
+        const target = PERP_THICKNESS_FRACTION * transitionMinWall(tr);
+        if (innerPerpThickness(tr, A, arcLen) < target) {
+          let need = solvePerpLength(tr, A, target) ?? Infinity;
+          need = Math.min(need, PERP_ARC_CAP_MULT * dR);   // cap the transition length at N·Δr
+          if (need > arcLen) {
+            arcLen = need;
+            if (bent) { R = arcLen / Math.abs(A); faceClamped = false; }
+            lenFloored = true;
+          }
+        }
+      }
       const minFace = bent ? innerFaceLength(tr, Math.abs(A), minBendRadius(tr)) : 0;
       const sStart = s, sEnd = s + arcLen;
       let center = null;
@@ -272,7 +307,9 @@ function makePath(p) {
         segments.push({ kind: 'bend', bi: i, straight: true, sStart, sEnd, tr, P0: [P[0], P[1], P[2]], dir: dir2, T: [dir2[0], dir2[1], 0] });
         P = [P[0] + arcLen * dir2[0], P[1] + arcLen * dir2[1], 0];
       }
-      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped: sol.clamped, minFace, sStart, sEnd });
+      const wallLimit = transitionMinWall(tr);
+      const perpThk = dR > 1e-6 ? innerPerpThickness(tr, A, arcLen) : wallLimit;
+      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, lenFloored, perpThk, wallLimit, sStart, sEnd });
       s = sEnd;
     }
   }
@@ -317,6 +354,57 @@ function minBendRadius(tr) {
   let mx = 0;
   for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
   return mx * 1.02;
+}
+
+// The thinnest wall the transition carries, and its total outer-radius change.
+// The inner-bend perpendicular thickness can approach the former but never the
+// latter matters for how much arc the reduction needs.
+function transitionMinWall(tr) {
+  let mn = Infinity;
+  for (let i = 0; i <= 40; i++) mn = Math.min(mn, transitionAt(tr, i / 40).wall);
+  return mn;
+}
+function transitionDeltaOuter(tr) {
+  let mn = Infinity, mx = -Infinity;
+  for (let i = 0; i <= 40; i++) { const o = outerAtT(tr, i / 40); mn = Math.min(mn, o); mx = Math.max(mx, o); }
+  return mx - mn;
+}
+
+// True material thickness of the inner (concave) transition wall, measured
+// PERPENDICULAR to the surface rather than radially — the same physics whether
+// the transition turns (an arc) or runs straight (a 0° reducer), so it is
+// written once in terms of the transition length `len`. As parameter t sweeps
+// 0→1 the concave outer surface advances `tang = len − |A|·outer(t)` along the
+// surface (for a straight run |A|=0, so tang = len; for an arc this is exactly
+// ρ·A with ρ = R−outer, len = R·A) while moving `outer'` radially. The bore is
+// the same curve offset radially by wall(t); that radial offset projects to a
+// perpendicular gap of wall·tang/√(outer'² + tang²), which collapses as the ramp
+// steepens even though the radial wall is unchanged. Returns the min over t;
+// monotonically increasing in `len`.
+function innerPerpThickness(tr, A, len) {
+  const n = 200; let mn = Infinity;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const { wall } = transitionAt(tr, t);
+    const tang = len - Math.abs(A) * outerAtT(tr, t);
+    if (tang <= 0) return 0;                       // concave face has reached/crossed the pivot
+    const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
+    const dOuter = (outerAtT(tr, tp) - outerAtT(tr, tm)) / (tp - tm);
+    mn = Math.min(mn, wall * tang / Math.hypot(dOuter, tang));
+  }
+  return mn;
+}
+
+// Smallest transition length whose inner perpendicular thickness reaches `target`.
+// Monotonic in `len`, so bisect. Returns null if even a very long transition
+// can't reach it (target above the attainable limit, transitionMinWall).
+function solvePerpLength(tr, A, target) {
+  let lo = 0;
+  let hi = Math.max(target, 1);
+  for (let k = 0; k < 60 && innerPerpThickness(tr, A, hi) < target; k++) hi *= 2;
+  if (innerPerpThickness(tr, A, hi) < target) return null;
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (innerPerpThickness(tr, A, mid) < target) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
 }
 
 // Solve R so the inner face arc equals the requested length. Monotonic in R.
@@ -701,6 +789,8 @@ export function build(raw, radialSegments) {
     const b = path.perBend[i];
     if (b.bend && b.faceClamped) {
       notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
+    } else if (b.lenFloored) {
+      notes.push('Bend ' + (i + 1) + ' lengthened to ~' + (round(b.arcLen, 1)) + ' mm so its inner wall stays ~' + (round(b.perpThk, 1)) + ' mm thick (of the ' + (round(b.wallLimit, 1)) + ' mm wall)');
     }
   }
 

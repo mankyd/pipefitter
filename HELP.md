@@ -12,7 +12,7 @@ section. You can click on any section header to collapse it and make more room.
 ## Sections
 
 Each section controls one straight run of the pipe. Start by specifying the inner and outer diameters. Then specify the
-length. Use **Mimic Previous Section** / **Mimic Next Section** buttons to match a neighbour.
+length. Use **Mimic Previous Section** / **Mimic Next Section** buttons to match a neighbor.
 
 Only the **first and last** sections have an **End Treatment** (the two open ends of the pipe):
 
@@ -37,16 +37,16 @@ Only the **first and last** sections have an **End Treatment** (the two open end
 
 ## Bends
 
-Each bend joins two neighbouring sections. Set its angle anywhere from −90° to 90° — the sign chooses which way it
+Each bend joins two neighboring sections. Set its angle anywhere from −90° to 90° — the sign chooses which way it
 turns, so two bends with alternating signs make an S-shape. An angle of 0° is a straight transition. The **Length**
 option measures the bend's length when it is straight, but changes to measure the length along the outside of the inner
 bend once there is any angle. All bends share one plane.
 
-By default a bend blends the inner diameter and wall thickness **smoothly** from one neighbouring section to the
+By default a bend blends the inner diameter and wall thickness **smoothly** from one neighboring section to the
 other. Turn off **Continuous Ø** or **Continuous thickness** to instead set a fixed value at the middle of the
-transition: make the diameter larger than both neighbours for a bulge or smaller for a pinch, and likewise thicken or
-thin the wall. Each of these fixed controls includes buttons to quickly match the left neighbour, the right
-neighbour, or the average of the two.
+transition: make the diameter larger than both neighbors for a bulge or smaller for a pinch, and likewise thicken or
+thin the wall. Each of these fixed controls includes buttons to quickly match the left neighbor, the right
+neighbor, or the average of the two.
 
 ## Download
 

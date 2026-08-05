@@ -1,16 +1,17 @@
 // Parametric N-section pipe adapter: a planar chain of straight sections joined
-// by bends (Section 1 · Bend 1 · Section 2 · … · Section N), swept along a
+// by bends (Section 1 · Bend 1 · Section 2 · ... · Section N), swept along a
 // centerline with per-station inner/outer radii, end features, binary STL export.
 //
 // Parameter model (single source of truth):
-//   { sections: [ {id, w, l, end?}, … ],   // N straight sections, N >= 2
-//     bends:    [ {ang, l2, idm, w2, idmSmooth, w2Smooth}, … ] }   // N-1 bends
+//   { sections: [ {id, w, l, end?}, ... ],   // N straight sections, N >= 2
+//     bends:    [ {ang, l2, idm, w2, idmSmooth, w2Smooth}, ... ] }   // N-1 bends
 // Only the FIRST and LAST sections carry an `end` treatment; interior sections
 // are pure constant-profile straight runs. Each bend owns the diameter/wall
-// transition between its two neighbouring sections. All bends lie in one plane;
-// a bend's `ang` is SIGNED ([-90,90]) — its sign is the turn direction.
+// transition between its two neighboring sections. All bends lie in one plane;
+// a bend's `ang` is SIGNED ([-90,90]) - its sign is the turn direction.
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const round = (v, dp) => { const f = 10 ** dp; return Math.round(v * f) / f; };
 const smooth = (t) => t * t * (3 - 2 * t);
 const lerp = (a, b, t) => a + (b - a) * t;
 
@@ -71,7 +72,7 @@ const cnum = (v, lim, whole, dflt) => {
   v = Number(v);
   if (!isFinite(v)) v = dflt;
   const c = clamp(v, lim[0], lim[1]);
-  return whole ? Math.round(c) : Math.round(c * 100) / 100;
+  return whole ? Math.round(c) : round(c, 2);
 };
 
 function normEnd(raw) {
@@ -99,7 +100,7 @@ function fitStub(end, sec) {
 
 // Clamp every value into a printable, non-self-intersecting range, and enforce
 // the shape invariant (N >= 2 sections, exactly N-1 bends, ends on the two
-// extremes only). Returns { p, notes } — notes describe what had to be pulled back.
+// extremes only). Returns { p, notes } - notes describe what had to be pulled back.
 export function normalize(raw) {
   const notes = [];
   const rawSecs = Array.isArray(raw && raw.sections) ? raw.sections : [];
@@ -136,7 +137,7 @@ export function normalize(raw) {
 }
 
 // An end feature must fit inside its straight section. Mutates sec.end and
-// appends any pull-back notes (labelled by 1-based section index).
+// appends any pull-back notes (labeled by 1-based section index).
 function fitEnd(sec, index, notes) {
   const e = sec.end;
   if (!e) return;
@@ -145,16 +146,16 @@ function fitEnd(sec, index, notes) {
   if (e.type === 'chamfer') {
     const maxX = secLen;   // an along-axis chamfer can span the whole section
     for (const k of ['ChX', 'ChIX']) {
-      if (e[k] > maxX) { e[k] = Math.round(maxX * 100) / 100; notes.push(label + ' chamfer depth limited to ' + e[k] + ' mm by section length'); }
+      if (e[k] > maxX) { e[k] = round(maxX, 2); notes.push(label + ' chamfer depth limited to ' + e[k] + ' mm by section length'); }
     }
     // The outer and bore radial chamfers share the wall: together at most the
     // full wall thickness, so either can consume it all when the other is 0.
-    if (e.ChIY > wall) { e.ChIY = Math.round(wall * 100) / 100; notes.push(label + ' bore chamfer reduced to ' + e.ChIY + ' mm by wall thickness'); }
+    if (e.ChIY > wall) { e.ChIY = round(wall, 2); notes.push(label + ' bore chamfer reduced to ' + e.ChIY + ' mm by wall thickness'); }
     const outMax = wall - e.ChIY;
-    if (e.ChY > outMax) { e.ChY = Math.round(outMax * 100) / 100; notes.push(label + ' outer chamfer reduced to ' + e.ChY + ' mm — wall shared with the bore chamfer'); }
+    if (e.ChY > outMax) { e.ChY = round(outMax, 2); notes.push(label + ' outer chamfer reduced to ' + e.ChY + ' mm — wall shared with the bore chamfer'); }
   } else if (e.type === 'flange') {
     const maxT = secLen * 0.45;
-    if (e.Ft > maxT) { e.Ft = Math.round(maxT * 100) / 100; notes.push(label + ' flange thinned to ' + e.Ft + ' mm to fit the section'); }
+    if (e.Ft > maxT) { e.Ft = round(maxT, 2); notes.push(label + ' flange thinned to ' + e.Ft + ' mm to fit the section'); }
     // Bolt holes sit on a circle through the middle of the flange lip; keep
     // them inside the lip and clear of one another.
     const nn = e.Fn;
@@ -163,8 +164,8 @@ function fitEnd(sec, index, notes) {
       const O = (sec.id + 2 * wall) / 2;
       const rc = O + fw / 2;
       let maxDia = fw * 0.8;                                   // fit across the lip width
-      if (nn >= 2) maxDia = Math.min(maxDia, 2 * rc * Math.sin(Math.PI / nn) * 0.8); // don't overlap neighbours
-      if (e.Fh > maxDia) { e.Fh = Math.round(maxDia * 100) / 100; notes.push(label + ' flange holes reduced to ø' + e.Fh + ' mm to fit'); }
+      if (nn >= 2) maxDia = Math.min(maxDia, 2 * rc * Math.sin(Math.PI / nn) * 0.8); // don't overlap neighbors
+      if (e.Fh > maxDia) { e.Fh = round(maxDia, 2); notes.push(label + ' flange holes reduced to ø' + e.Fh + ' mm to fit'); }
     }
   } else if (e.type === 'barb') {
     const maxSpan = secLen * 0.85;
@@ -175,29 +176,29 @@ function fitEnd(sec, index, notes) {
   } else if (e.type === 'teeth') {
     // Teeth share the circle: their angular widths can't sum past 360°.
     const maxW = 360 / e.Tn;
-    if (e.Tw > maxW) { e.Tw = Math.round(maxW * 100) / 100; notes.push(label + ' teeth narrowed to ' + e.Tw + '° — no room for more'); }
+    if (e.Tw > maxW) { e.Tw = round(maxW, 2); notes.push(label + ' teeth narrowed to ' + e.Tw + '° — no room for more'); }
     // The fillet rounds the top edge at its full value (up to ~2.5× the height)
     // and the sides at a quarter, so the cap allows for both.
     const O = (sec.id + 2 * wall) / 2;
     const halfArc = (e.Tw * Math.PI / 180 / 2) * O;
     const maxF = Math.min(2.5 * e.Th, 4 * halfArc);
-    if (e.Tf > maxF) { e.Tf = Math.round(maxF * 100) / 100; notes.push(label + ' tooth fillet reduced to ' + e.Tf + ' mm'); }
+    if (e.Tf > maxF) { e.Tf = round(maxF, 2); notes.push(label + ' tooth fillet reduced to ' + e.Tf + ' mm'); }
   } else if (e.type === 'fit') {
     // The stub is carved from the section's length, so it must leave a body.
     const maxL = Math.max(0, secLen - 1);
-    if (e.FitL > maxL) { e.FitL = Math.round(maxL * 100) / 100; notes.push(label + ' fit length limited to ' + e.FitL + ' mm by section length'); }
+    if (e.FitL > maxL) { e.FitL = round(maxL, 2); notes.push(label + ' fit length limited to ' + e.FitL + ' mm by section length'); }
     // A spigot's tolerance can't exceed the bore (it would invert the wall).
     if (e.FitSide === 'inside') {
       const maxTol = Math.max(0, sec.id - 2 * wall - 0.5);
-      if (e.FitTol > maxTol) { e.FitTol = Math.round(maxTol * 100) / 100; notes.push(label + ' fit tolerance limited to ' + e.FitTol + ' mm by wall'); }
+      if (e.FitTol > maxTol) { e.FitTol = round(maxTol, 2); notes.push(label + ' fit tolerance limited to ' + e.FitTol + ' mm by wall'); }
     }
     // The lead-in chamfer can't exceed the wall (radial) or the stub (axial).
-    if (e.FitChY > wall) { e.FitChY = Math.round(wall * 100) / 100; notes.push(label + ' fit chamfer reduced to ' + e.FitChY + ' mm by wall thickness'); }
-    if (e.FitChX > e.FitL) { e.FitChX = Math.round(e.FitL * 100) / 100; notes.push(label + ' fit chamfer depth limited to ' + e.FitChX + ' mm by fit length'); }
+    if (e.FitChY > wall) { e.FitChY = round(wall, 2); notes.push(label + ' fit chamfer reduced to ' + e.FitChY + ' mm by wall thickness'); }
+    if (e.FitChX > e.FitL) { e.FitChX = round(e.FitL, 2); notes.push(label + ' fit chamfer depth limited to ' + e.FitChX + ' mm by fit length'); }
   }
 }
 
-// The diameter/wall transition a bend owns, resolved between its two neighbours.
+// The diameter/wall transition a bend owns, resolved between its two neighbors.
 function transitionOf(a, b, bend) {
   return {
     idA: a.id / 2, idB: b.id / 2, idm: bend.idm / 2,
@@ -250,7 +251,7 @@ function makePath(p) {
       const bent = Math.abs(A) > 1e-6;
       const tr = transitionOf(sections[i], sections[i + 1], bd);
       // B is the arc length along the OUTER surface on the inner side of the
-      // bend; solve the centreline radius that produces exactly that length.
+      // bend; solve the centerline radius that produces exactly that length.
       const sol = bent ? solveBendRadius(tr, Math.abs(A), bd.l2) : { R: 0, clamped: false };
       const R = sol.R;
       const arcLen = bent ? R * Math.abs(A) : bd.l2;
@@ -294,7 +295,7 @@ function makePath(p) {
 }
 
 // True 2D path length of the outer surface on the inner side of the bend, for a
-// given centreline radius R. The surface sits at ρ(φ) = R - outer(t); because
+// given centerline radius R. The surface sits at ρ(φ) = R - outer(t); because
 // the two ends differ in diameter the curve also moves radially, so the length
 // is ∫√(ρ² + ρ'²) dφ rather than just ∫ρ dφ.
 function innerFaceLength(tr, A, R) {
@@ -311,7 +312,7 @@ function innerFaceLength(tr, A, R) {
   return len;
 }
 
-// Smallest R that keeps the inner face clear of the centreline, plus margin.
+// Smallest R that keeps the inner face clear of the centerline, plus margin.
 function minBendRadius(tr) {
   let mx = 0;
   for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
@@ -348,7 +349,7 @@ function profileAt(s, path) {
 
 // ── Teeth end treatment ──────────────────────────────────────────────────────
 // A ring of saw-tooth barbs near the end. Each tooth spans an angular sector:
-// its radius rises to O+Th at the centre and rounds back to the base radius O at
+// its radius rises to O+Th at the center and rounds back to the base radius O at
 // the sector edges over a fillet, and is flat O between teeth. Along the axis the
 // tooth is a barb: a lead-in ramp out to the peak, then a steep drop (cliff) back
 // to the base. The profile is zero at both the end face and the inner boundary,
@@ -370,7 +371,7 @@ function toothBumpAxial(u, k) {
   const cliff = 1 - (u - TOOTH_PEAK) / (TOOTH_CLIFF - TOOTH_PEAK);
   return clamp(smin(ramp, cliff, k || 0), 0, 1);
 }
-// Teeth are centred on the top of the pipe within the bend plane: θ=0 in ring()
+// Teeth are centerd on the top of the pipe within the bend plane: θ=0 in ring()
 // points out of that plane (the +z "side") and +v (θ=+90°) is the bottom, so the
 // pattern is phase-shifted to −90° to put a tooth at the top (−v). A single tooth
 // then sits at the top, and larger counts stay symmetric about the bend plane.
@@ -379,7 +380,7 @@ function toothAngular(th, n, half, fRad) {
   const sector = (2 * Math.PI) / n;
   const rel = (th - TOOTH_PHASE) / sector;
   const frac = rel - Math.round(rel);                   // −0.5..0.5 of the nearest sector
-  const delta = Math.abs(frac) * sector;                // angular distance to the nearest tooth centre
+  const delta = Math.abs(frac) * sector;                // angular distance to the nearest tooth center
   // A gap only exists where teeth don't fill the circle (half < sector/2). When
   // they do fill it, the seams stay at full height so the ring is solid.
   if (delta >= half && half < sector / 2 - 1e-9) return 0;
@@ -389,7 +390,7 @@ function toothAngular(th, n, half, fRad) {
   return x * x * (3 - 2 * x);                            // smoothstep fillet, base → top
 }
 function teethLength(end, secLen) {
-  return Math.min(secLen * 0.7, Math.max(1.2, end.Th * 2.2));
+  return clamp(end.Th * 2.2, 1.2, secLen * 0.7);
 }
 // Teeth parameters resolved for meshing. `atStart` = true for the first section
 // (teeth at s=0), false for the last (teeth at s=T). `T` is the total path length.
@@ -401,9 +402,9 @@ function teethSpec(end, O, T, secLen, atStart) {
   return {
     n,
     half,
-    // Side (angular) fillet gets a QUARTER of the value — it reads strongly there,
+    // Side (angular) fillet gets a QUARTER of the value - it reads strongly there,
     // so most of the value is reserved for the top edge where it matters most.
-    // Still capped by the tooth half-width and the gap to its neighbour, so teeth
+    // Still capped by the tooth half-width and the gap to its neighbor, so teeth
     // that fill the circle merge into a solid ring instead of grooving each seam.
     fRad: Math.min(0.25 * end.Tf / Math.max(O, 0.1), half, halfGap),
     // Top-edge fillet gets the FULL value; ~2.5× the height fully rounds the crest.
@@ -442,7 +443,7 @@ function endFeature(end, baseOuter, sec) {
     // peak over one pitch, then a vertical cliff back down to O (never below O,
     // so it can't dip into the wall). Each corner station is duplicated so the
     // sweep gives it a hard edge (crisp shading) rather than smoothing the ramp
-    // into the cliff — otherwise the cliff's normal is averaged away.
+    // into the cliff - otherwise the cliff's normal is averaged away.
     pts.push({ d: 0, r: O });
     for (let k = 0; k < n; k++) {
       const top = (k + 1) * pitch;
@@ -450,7 +451,7 @@ function endFeature(end, baseOuter, sec) {
       pts.push({ d: top, r: O }, { d: top, r: O });           // cliff to base, hard edge
     }
   } else if (type === 'teeth') {
-    // Envelope of the teeth zone (peak radius vs. axial distance) — used for the
+    // Envelope of the teeth zone (peak radius vs. axial distance) - used for the
     // silhouette and to reserve the zone; the mesh replaces these stations with
     // per-angle radius functions (see build / teethRadiusFn). Sampled densely
     // through the ramp with points straddling the cliff so the barb edge stays crisp.
@@ -517,7 +518,7 @@ const TEX_VSCALE = 6;
 
 // `r` is either a scalar radius or a function (k, θ) → radius, letting a station
 // vary its radius by angle (used by the teeth end treatment). Emits N+1 vertices
-// — the last duplicates the first position but carries u at the full wrap — so a
+// - the last duplicates the first position but carries u at the full wrap - so a
 // wrap-around texture has no seam at the ring closure. The k=0 / k=N index pair
 // is recorded in `seams` so their normals can be welded back together (the extra
 // vertex is only for UVs, not a shading crease). `vCoord` is the v texture
@@ -619,7 +620,7 @@ function cap(verts, uvs, seams, idx, path, s, ri, ro, N, outSign) {
 // face (annulus [O, O+fw]), the outer rim, and one cylindrical barrel per hole.
 // Each face is a flat annulus-with-holes triangulated by earcut. Every boundary
 // circle is sampled to coincide with the swept tube it meets, so the seams are
-// watertight without shared vertex indices — the module's usual contract.
+// watertight without shared vertex indices - the module's usual contract.
 function buildFlangeEnd(verts, uvs, seams, idx, path, N, o) {
   const { sFace, sRoot, O, fw, rh, n, boreR, frontPlusTangent } = o;
   const rOut = O + fw, rc = O + fw / 2;
@@ -699,7 +700,7 @@ export function build(raw, radialSegments) {
   for (let i = 0; i < path.perBend.length; i++) {
     const b = path.perBend[i];
     if (b.bend && b.faceClamped) {
-      notes.push('Bend ' + (i + 1) + ' raised to ~' + (Math.round(b.minFace * 10) / 10) + ' mm — the tightest bend this diameter allows');
+      notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
     }
   }
 
@@ -799,7 +800,7 @@ export function build(raw, radialSegments) {
 
   // ---- 2D silhouette in the bend plane (for the schematic) --------------
   // `st.r` is a scalar radius, or { top, bot } to give the two sides different
-  // radii — which the bend plane cuts at +v and −v (see silStations for teeth).
+  // radii - which the bend plane cuts at +v and −v (see silStations for teeth).
   const sil = (stations) => {
     const top = [], bot = [];
     for (const st of stations) {
@@ -813,7 +814,7 @@ export function build(raw, radialSegments) {
     return { top, bot, s: stations.map((st) => st.s) };
   };
   // The bend plane cuts the pipe at the +v and −v directions (θ = ±90° in
-  // ring()), so sample the tooth radius there rather than the peak envelope —
+  // ring()), so sample the tooth radius there rather than the peak envelope -
   // a tooth then shows in the section only on the side it actually occupies.
   const silStations = teethSpecs.length ? outerStations.map((st) => {
     for (const spec of teethSpecs) {
@@ -869,8 +870,8 @@ export function build(raw, radialSegments) {
 
 /* ── Ear-clipping triangulation with holes ─────────────────────────────────
    Adapted from mapbox/earcut (ISC License). The z-order hashing fast path is
-   removed — the flange faces have few vertices, so the plain O(n²) ear test is
-   fine. `data` is a flat [x0,y0,x1,y1,…] list; `holeIndices` gives the vertex
+   removed - the flange faces have few vertices, so the plain O(n²) ear test is
+   fine. `data` is a flat [x0,y0,x1,y1,...] list; `holeIndices` gives the vertex
    index at which each hole ring starts. Returns a flat list of triangle vertex
    indices, wound clockwise (matching the outer ring earcut normalizes to). */
 function earcut(data, holeIndices) {
@@ -1241,8 +1242,8 @@ function mfZip(files) {
 }
 
 export function to3MF(positions, indices, name) {
-  // Weld coincident vertices onto a 1e-4 mm grid — far below print resolution,
-  // above float noise — so shared edges become truly shared (manifold by index).
+  // Weld coincident vertices onto a 1e-4 mm grid - far below print resolution,
+  // above float noise - so shared edges become truly shared (manifold by index).
   const map = new Map();
   const verts = [];
   const remap = new Int32Array(positions.length / 3);

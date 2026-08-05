@@ -15,9 +15,9 @@ const T = {
 // `highlight` selects the hovered group to band: null, or { kind:'section'|'bend',
 // index } (an arclength span is derived from g.path). `view` is an optional
 // user zoom/pan applied on top of the base fit: { zoom, panX, panY } in screen
-// (CSS px) space, defaulting to identity — the drawing keeps its correct aspect
+// (CSS px) space, defaulting to identity - the drawing keeps its correct aspect
 // ratio at every zoom because the base fit uses a single uniform scale. Returns
-// { leftX, leftTopY } — the screen position (CSS px, canvas-relative) of the
+// { leftX, leftTopY } - the screen position (CSS px, canvas-relative) of the
 // pipe's left edge and the top of its left end, so callers can line an overlay
 // up with the drawing.
 export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
@@ -43,7 +43,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
     if (q[0] < minX) minX = q[0]; if (q[0] > maxX) maxX = q[0];
     if (q[1] < minY) minY = q[1]; if (q[1] > maxY) maxY = q[1];
   }
-  // Fit to the pipe alone. The bend centre is deliberately excluded — at
+  // Fit to the pipe alone. The bend center is deliberately excluded - at
   // shallow angles it is hundreds of mm away and would shrink the part to a
   // hairline. The B arc and angle mark may run out of frame; that is fine.
   const pad = 44;
@@ -52,7 +52,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   const sy = (h - pad * 2 - bi) / Math.max(1, maxY - minY);
   const k = Math.min(sx, sy);
   const ox = (w - (maxX - minX) * k) / 2 - minX * k;
-  // Centre vertically within [pad, h - pad - bi] (Y is flipped, so Y(maxY) is the top).
+  // Center vertically within [pad, h - pad - bi] (Y is flipped, so Y(maxY) is the top).
   const oy = pad + ((h - 2 * pad - bi) - (maxY - minY) * k) / 2 + maxY * k;
   // User zoom/pan rides on top of the base fit as a uniform screen-space
   // transform, so the aspect ratio is preserved at every zoom level.
@@ -88,11 +88,11 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   ctx.stroke();
 
   // Section highlight (hover-driven). `highlight` is { kind, index } naming a
-  // section or bend — a translucent band over that segment, expanded a little
-  // beyond the pipe — or falsy for no highlight. Building it from the segment's
+  // section or bend - a translucent band over that segment, expanded a little
+  // beyond the pipe - or falsy for no highlight. Building it from the segment's
   // outer silhouette offset along its own outward normal handles straight,
   // tapered, and bent sections uniformly. Drawn over the cross-section so it
-  // reads as a highlight; centreline and dimensions stay crisp on top.
+  // reads as a highlight; centerline and dimensions stay crisp on top.
   if (highlight) {
     const src = highlight.kind === 'bend' ? g.path.bends[highlight.index] : g.path.sections[highlight.index];
     const span = src ? [src.sStart, src.sEnd] : null;
@@ -203,7 +203,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   };
 
   // Bends: curved ones trace the inner-face arc (that IS dimension B) with radial
-  // lines to their own centre and an angle readout; straight ones (0 deg) get a
+  // lines to their own center and an angle readout; straight ones (0 deg) get a
   // plain length tick. A fixed (non-continuous) middle diameter draws a bore tick
   // at its midpoint.
   g.path.bends.forEach((bd, i) => {
@@ -212,9 +212,9 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
       const c = bd.center;
       const idx = [];
       for (let j = 0; j < sArr.length; j++) if (sArr[j] >= bd.sStart - 1e-6 && sArr[j] <= bd.sEnd + 1e-6) idx.push(j);
-      // B runs along the outer surface on the INNER (concave) side of the bend —
-      // the silhouette edge nearer the bend centre. Which of top/bot that is
-      // depends on the turn direction, so choose by distance to the centre.
+      // B runs along the outer surface on the INNER (concave) side of the bend -
+      // the silhouette edge nearer the bend center. Which of top/bot that is
+      // depends on the turn direction, so choose by distance to the center.
       const midIdx = idx[Math.floor(idx.length / 2)];
       const oTop = g.silhouette.outer.top, oBot = g.silhouette.outer.bot;
       const d2c = (q) => (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]);
@@ -273,7 +273,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
     }
   });
 
-  // 'top'/'bot' are the two surfaces, not necessarily the visual top — take the
+  // 'top'/'bot' are the two surfaces, not necessarily the visual top - take the
   // one higher on screen (Y is flipped, so smaller Y is higher).
   const oT = g.silhouette.outer.top[0], oB = g.silhouette.outer.bot[0];
   return { leftX: X(minX), leftTopY: Math.min(Y(oT[1]), Y(oB[1])) };

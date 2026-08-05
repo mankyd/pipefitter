@@ -1,4 +1,4 @@
-/* Pipe Fitter — application layout and control styling.
+/* Pipe Fitter - application layout and control styling.
    Design tokens and component classes come from dark.css; this sheet holds
    the app shell, the range-input skin, and the viewer overlays. */
 
@@ -22,13 +22,13 @@ input[type=range] {
 input[type=range]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 13px; height: 13px; border-radius: 50%;
-  background: var(--color-bg); border: 1.5px solid var(--color-accent);
+  background: var(--color-bg); border: 2px solid var(--color-accent);
   cursor: ew-resize;
 }
 input[type=range]::-webkit-slider-thumb:hover { background: var(--color-accent-800); }
 input[type=range]::-moz-range-thumb {
   width: 11px; height: 11px; border-radius: 50%;
-  background: var(--color-bg); border: 1.5px solid var(--color-accent);
+  background: var(--color-bg); border: 2px solid var(--color-accent);
   cursor: ew-resize;
 }
 input[type=range]:focus-visible::-webkit-slider-thumb {
@@ -45,8 +45,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
 .topbar {
-  display: flex; align-items: center; gap: 22.4px;
-  padding: 11.2px 16.8px;
+  display: flex; align-items: center; gap: var(--space-8);
+  padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--color-neutral-900);
   flex: 0 0 auto;
 }
@@ -55,7 +55,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap;
 }
 .brand-title {
-  display: flex; align-items: baseline; gap: 8.4px;
+  display: flex; align-items: baseline; gap: var(--space-3);
   white-space: nowrap; min-width: 0; overflow: hidden;
 }
 .brand-name {
@@ -64,13 +64,13 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 }
 .brand-sub { font-size: 11px; color: var(--color-neutral-600); }
 .brand-summary {
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--color-neutral-700); letter-spacing: 0.04em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .layout-switch, .units-switch {
-  display: flex; gap: 2.8px; padding: 2.8px;
+  display: flex; gap: var(--space-1); padding: var(--space-1);
   border: 1px solid var(--color-neutral-900); border-radius: var(--radius-md);
   flex: 0 0 auto;
 }
@@ -79,7 +79,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   border-radius: var(--radius-sm); white-space: nowrap;
 }
 
-.actions { display: flex; align-items: center; gap: 8.4px; flex: 0 0 auto; }
+.actions { display: flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; }
 .actions .btn { white-space: nowrap; flex: 0 0 auto; font-size: 12px; }
 .actions .btn-undo, .actions .btn-redo { padding: 6px 11px; }
 .actions .menu-trigger { padding: 6px 12px; }
@@ -93,6 +93,11 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   display: inline-flex; align-items: center; justify-content: center;
 }
 
+/* Once the panel is forced below the viewer (width < 900), the topbar gets
+   crowded, so tuck the mm/in toggle tighter against its neighbors. */
+@media (max-width: 899px) {
+  .units-switch { margin-left: -32px; margin-right: -12px; }
+}
 /* Below this the brand and the controls can't share a row without the
    (negatively-margined) unit toggle overlapping the title, so wrap the brand
    onto its own line above the controls and drop the now-pointless negative
@@ -102,7 +107,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
      button (toggle + actions) together on the single line below it. */
   .topbar { flex-wrap: wrap; row-gap: 8px; column-gap: 12px; justify-content: flex-end; }
   .brand { flex-basis: 100%; }
-  .units-switch { margin: 0 !important; }
+  .units-switch { margin: 0; }
 }
 /* Phone widths (e.g. iPhone 12 Pro, 390px): shrink padding, gaps, and the
    menu-trigger buttons further so the control row still fits on one line. */
@@ -129,10 +134,10 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .menu:hover .menu-list, .menu:focus-within .menu-list { display: flex; }
 .menu-heading {
   padding: 6px 10px 2px; font-family: var(--font-body);
-  font-size: 9.5px; font-weight: 600; letter-spacing: 0.1em;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--color-neutral-500);
 }
-/* A heading that follows items is the 2nd group (3MF) — space it off from the first. */
+/* A heading that follows items is the 2nd group (3MF) - space it off from the first. */
 .menu-item + .menu-heading { margin-top: 4px; }
 .menu-item {
   display: block; width: 100%; text-align: left; white-space: nowrap;
@@ -152,7 +157,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 /* ── Help modal ───────────────────────────────────────────────────────────── */
 .help-backdrop {
   position: fixed; inset: 0; z-index: 50;
-  display: grid; place-items: center; padding: 22.4px;
+  display: grid; place-items: center; padding: var(--space-8);
   background: color-mix(in srgb, var(--color-neutral-900) 55%, transparent);
   -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
 }
@@ -160,7 +165,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .help-dialog {
   position: relative;
   width: min(560px, 100%); max-height: 80vh; overflow: auto;
-  padding: 22.4px 28px;
+  padding: var(--space-8) 28px;
   background: var(--color-surface);
   border: 1px solid var(--color-neutral-800);
   border-radius: var(--radius-lg);
@@ -169,7 +174,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .help-dialog::-webkit-scrollbar { width: 9px; }
 .help-dialog::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border-radius: 5px; }
 .help-close {
-  position: absolute; top: 11.2px; right: 11.2px;
+  position: absolute; top: var(--space-4); right: var(--space-4);
   width: 26px; height: 26px; padding: 0;
   display: flex; align-items: center; justify-content: center;
   background: none; border: 0; border-radius: var(--radius-sm);
@@ -178,7 +183,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .help-close:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); color: var(--color-neutral-200); }
 
 /* Rendered markdown, themed to match the app */
-.markdown { color: var(--color-neutral-300); font-size: 13.5px; line-height: 1.6; }
+.markdown { color: var(--color-neutral-300); font-size: 14px; line-height: 1.6; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
 .markdown h1 {
@@ -227,19 +232,19 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .panel-toolbar {
   position: sticky; top: 0; z-index: 5;
   display: flex; gap: 8px;
-  padding: 10px 16.8px;
+  padding: 10px var(--space-6);
   background: #1a1c29;
   border-bottom: 1px solid var(--color-neutral-900);
 }
 .panel-toolbar .btn { flex: 1 1 0; padding: 5px 8px; font-size: 11px; }
-.panel-grid { display: grid; gap: 22.4px; padding: 16.8px; }
+.panel-grid { display: grid; gap: var(--space-8); padding: var(--space-6); }
 
-.group { display: flex; flex-direction: column; gap: 2.8px; min-width: 0; }
+.group { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .group-head {
-  display: flex; align-items: center; gap: 8.4px; padding-bottom: 5.6px;
+  display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2);
 }
 .group-toggle {
-  display: flex; align-items: center; gap: 8.4px; min-width: 0;
+  display: flex; align-items: center; gap: var(--space-3); min-width: 0;
   padding: 0; margin: 0; border: 0; background: none;
   font: inherit; color: inherit; text-align: left; cursor: pointer;
 }
@@ -250,7 +255,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .group.collapsed .group-caret { transform: rotate(-90deg); }
 .group-toggle:hover .group-title { color: var(--color-neutral-100); }
 .group-toggle:hover .group-caret { color: var(--color-neutral-400); }
-.group-body { display: flex; flex-direction: column; gap: 2.8px; }
+.group-body { display: flex; flex-direction: column; gap: var(--space-1); }
 .group.collapsed .group-body { display: none; }
 .group-tag {
   font-family: 'JetBrains Mono', monospace; font-size: 11px;
@@ -258,33 +263,33 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 }
 .group-title {
   font-family: var(--font-heading); font-weight: 500;
-  font-size: 12.5px; color: var(--color-neutral-300);
+  font-size: 13px; color: var(--color-neutral-300);
 }
 .group-rule {
   flex: 1 1 auto; height: 1px;
   background: linear-gradient(90deg, var(--color-neutral-800), transparent);
 }
 .group-mirror {
-  padding: 2px 7px; font-size: 10.5px;
+  padding: 2px 7px; font-size: 11px;
   white-space: nowrap; border-radius: var(--radius-sm);
 }
 
 .presets {
-  display: flex; flex-wrap: wrap; gap: 5.6px; padding: 2px 0 6px;
+  display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 2px 0 6px;
 }
 .presets .btn {
   padding: 3px 10px; font-size: 11px; border-radius: var(--radius-sm);
 }
 
-.field-actions { display: flex; flex-wrap: wrap; gap: 5.6px; padding: 2px 0 4px; }
-.field-action { padding: 3px 9px; font-size: 10.5px; white-space: nowrap; }
+.field-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 2px 0 4px; }
+.field-action { padding: 3px 9px; font-size: 11px; white-space: nowrap; }
 .field-readout {
   font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--color-neutral-500); text-align: right; padding: 0 0 2px;
 }
 .field-toggle {
   display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer;
-  font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--color-neutral-500);
 }
 .field-toggle input {
@@ -296,23 +301,23 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .field { display: grid; gap: 4px; padding: 4px 0; }
 .field > label {
   display: flex; justify-content: space-between; align-items: baseline;
-  gap: 8.4px; margin: 0;
+  gap: var(--space-3); margin: 0;
 }
 .field-name {
-  font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--color-neutral-500);
 }
 .field-hint {
   font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--color-neutral-700);
 }
-.field-enum { width: 100%; min-height: 30px; padding: 4px 7px; font-size: 12.5px; }
+.field-enum { width: 100%; min-height: 30px; padding: 4px 7px; font-size: 13px; }
 .field-num {
-  display: grid; grid-template-columns: 1fr 56px; gap: 11.2px; align-items: center;
+  display: grid; grid-template-columns: 1fr 56px; gap: var(--space-4); align-items: center;
 }
 .field-num-input {
   width: 100%; min-height: 28px; padding: 3px 5px;
-  font-family: 'JetBrains Mono', monospace; font-size: 11.5px; text-align: right;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right;
 }
 
 /* ── Viewer ───────────────────────────────────────────────────────────────── */
@@ -328,8 +333,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 
 .overlay { position: absolute; z-index: 3; }
 .overlay-tl {
-  top: 16.8px; left: 16.8px;
-  display: flex; flex-direction: column; gap: 5.6px; pointer-events: none;
+  top: var(--space-6); left: var(--space-6);
+  display: flex; flex-direction: column; gap: var(--space-2); pointer-events: none;
 }
 .overlay-kicker {
   font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
@@ -340,12 +345,12 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   color: var(--color-neutral-200);
 }
 .overlay-mesh {
-  font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
   color: var(--color-neutral-700);
 }
 .overlay-tr {
-  top: 16.8px; right: 16.8px;
-  display: flex; flex-direction: column; gap: 5.6px;
+  top: var(--space-6); right: var(--space-6);
+  display: flex; flex-direction: column; gap: var(--space-2);
   align-items: flex-end; max-width: 300px;
 }
 .note {
@@ -355,26 +360,26 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   padding: 4px 8px;
 }
 .overlay-br {
-  bottom: 16.8px; right: 16.8px;
-  display: flex; flex-direction: row; align-items: flex-end; gap: 11.2px;
+  bottom: var(--space-6); right: var(--space-6);
+  display: flex; flex-direction: row; align-items: flex-end; gap: var(--space-4);
 }
 /* Warnings sit under the camera controls in the top-right stack. */
 .overlay-tr .notes:empty { display: none; }
 .overlay-tr .notes {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 5.6px;
-  margin-top: 8.4px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 .coffee { display: block; line-height: 0; }
-.coffee img { display: block; }
+.coffee img { display: block; width: 109px; height: 30px; }
 .copyright {
   font-family: 'JetBrains Mono', monospace; font-size: 10px;
   color: var(--color-neutral-700); white-space: nowrap;
   /* Bottom-aligned with the coffee button and given its height, so the text
-     centres against the button rather than the taller controls stack. */
+     centers against the button rather than the taller controls stack. */
   align-self: flex-end; height: 30px; line-height: 30px;
 }
 .br-controls {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8.4px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-3);
 }
 .br-controls .hint {
   font-family: 'JetBrains Mono', monospace; font-size: 10px;
@@ -404,7 +409,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 
 /* ── Schematic card ───────────────────────────────────────────────────────── */
 .schematic {
-  position: absolute; bottom: 16.8px; left: 16.8px; margin: 0;
+  position: absolute; bottom: var(--space-6); left: var(--space-6); margin: 0;
   width: 352px; z-index: 2;
   border: 1px solid var(--color-neutral-800); border-radius: var(--radius-md);
   background: #1b1d2b; box-shadow: var(--shadow-md); overflow: hidden;

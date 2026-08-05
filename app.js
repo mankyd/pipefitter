@@ -1,9 +1,8 @@
-// Pipe Fitter — application entry point.
+// Pipe Fitter - application entry point.
 //
-// Ported from the interaction prototype (originally written against a
-// prototype-only runtime) to standalone ES modules. The geometry and schematic
-// modules are used verbatim; three.js is vendored under ./vendor. All state is
-// local to the page — there is no server and no persistence beyond the URL hash.
+// The geometry and schematic live in their own modules; three.js is vendored
+// under ./vendor. All state is local to the page: there is no server and no
+// persistence beyond the URL hash.
 
 import * as THREE from './vendor/three.module.js';
 import * as geo from './pipe-geometry.js';
@@ -41,18 +40,30 @@ const el = {
 
 // ── State ───────────────────────────────────────────────────────────────────
 const state = {
-  params: null,       // the clamped { sections, bends } model — single source of truth
+  params: null,       // the clamped { sections, bends } model - single source of truth
   layout: 'left',     // 'left' | 'right' | 'bottom'
-  units: 'mm',        // display units only — 'mm' | 'in'; geometry is always mm
+  units: 'mm',        // display units only - 'mm' | 'in'; geometry is always mm
 };
 
-// Display-unit conversion. The model is stored in millimetres end to end; these
+// ── Small helpers ─────────────────────────────────────────────────────────────
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const round = (v, dp) => { const f = 10 ** dp; return Math.round(v * f) / f; };
+const clampPol = (p) => clamp(p, 0.08, Math.PI - 0.08);   // keep the camera off the poles (lookAt is degenerate there)
+const clampDist = (d) => clamp(d, 6, 4000);               // camera distance range
+// Read one decoded field from the URL hash, or null if absent.
+const hashParam = (name) => {
+  const m = new RegExp('[#&]' + name + '=([^&]*)').exec(window.location.hash || '');
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
+};
+
+// Display-unit conversion. The model is stored in millimeters end to end; these
 // only affect what the panel, overlays, and schematic *show*. A length control
 // with 'mm' in its hint is convertible; counts, angles, and degrees are not.
 const MM_PER_IN = 25.4;
 const SNAP_IN = 1 / 32;   // inch-mode controls step and snap to 1/32"
 const inchMode = () => state.units === 'in';
-const toDisp = (mm) => inchMode() ? Math.round((mm / MM_PER_IN) * 1000) / 1000 : mm;   // mm → shown number
+const toDisp = (mm) => inchMode() ? round(mm / MM_PER_IN, 3) : mm;                     // mm → shown number
 const fromDisp = (v) => inchMode() ? v * MM_PER_IN : v;                                // shown number → mm
 const snapIn = (inches) => Math.round(inches / SNAP_IN) * SNAP_IN;                     // → nearest 1/32"
 // A control's min/max pushed out to the nearest 1/32" grid line, so the slider's
@@ -64,7 +75,7 @@ const dispBound = (mm, dir) => {
 };
 const unitSuffix = () => inchMode() ? 'in' : 'mm';
 const isLenCtrl = (c) => c.kind === 'num' && /mm/.test(c.hint || '');
-// The hint doubles as the unit label ('mm', 'ø mm', …) — swap it for display.
+// The hint doubles as the unit label ('mm', 'ø mm', ...) - swap it for display.
 const dispHint = (c) => (isLenCtrl(c) && inchMode()) ? c.hint.replace('mm', 'in') : c.hint;
 
 let undoStack = [];
@@ -72,7 +83,7 @@ let redoStack = [];
 let lastKey = null;   // control key of the last committed edit (coalescing)
 let lastT = 0;        // timestamp of the last committed edit
 let dragBase = null;  // params snapshot at the start of an edit gesture, so values
-let dragKey = null;   // clamped down mid-drag recover if the drag reverses — see set()
+let dragKey = null;   // clamped down mid-drag recover if the drag reverses - see set()
 
 let cachedG = null;   // memoized geometry result
 let cachedSig = '';   // parameter signature the cache was built for
@@ -90,11 +101,11 @@ let swapped = false;  // true when the diagram is expanded and the 3D view is a 
 let gridKey = '';
 let rafPending = false;
 let resizeObserver = null;
-let hasCustomView = false;   // once true, the camera pose is written to the URL (#view=…)
+let hasCustomView = false;   // once true, the camera pose is written to the URL (#view=...)
 let wheelTimer = null;       // debounce so zoom writes the URL only after scrolling stops
 
 // Render styles for the 3D mesh, chosen from the topbar "Render" menu and kept
-// in the URL (#render=…). Most are PBR (colour/metalness/roughness/env intensity,
+// in the URL (#render=...). Most are PBR (color/metalness/roughness/env intensity,
 // lit by the studio environment in makeEnvironment); their per-style surface
 // relief/texture lives in SURFACE below. `wireframe` and `normals` swap type.
 const RENDER_STYLES = {
@@ -110,12 +121,12 @@ const surfaceCache = {};   // per-style { normalMap, roughnessMap, map }, built 
 
 // ── Parameters: hash serialization ──────────────────────────────────────────
 // The URL carries the whole chain, list-based so any number of sections works:
-//   #s=<sec>|<sec>|…&b=<bend>|<bend>|…&e0=<end>&eN=<end>
+//   #s=<sec>|<sec>|...&b=<bend>|<bend>|...&e0=<end>&eN=<end>
 // A section is `id~w~l`; a bend is `ang~l2~idm~w2~idmSmooth~w2Smooth`; both use
 // `~` between fields and `|` between entries. The two end treatments (first and
-// last section) ride in `e0` / `eN` as `type~p1~p2…`, carrying only the params
+// last section) ride in `e0` / `eN` as `type~p1~p2...`, carrying only the params
 // that treatment uses. Missing values fall back to defaults; the shape is
-// re-normalised on load (≥2 sections, exactly N-1 bends).
+// re-normalized on load (≥2 sections, exactly N-1 bends).
 
 const encodeEnd = (end) => [end.type, ...(END_TREATMENT_KEYS[end.type] || []).map((suf) => end[suf])].join('~');
 function decodeEnd(token) {
@@ -127,25 +138,19 @@ function decodeEnd(token) {
 }
 
 function readHash() {
-  const hash = window.location.hash || '';
-  const get = (name) => {
-    const m = new RegExp('[#&]' + name + '=([^&]*)').exec(hash);
-    if (!m) return null;
-    try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
-  };
-  const sRaw = get('s');
+  const sRaw = hashParam('s');
   if (sRaw === null) return null;
   const sections = sRaw.split('|').filter((x) => x !== '').map((tok) => {
     const f = tok.split('~');
     return { id: f[0], w: f[1], l: f[2] };
   });
-  const bRaw = get('b');
+  const bRaw = hashParam('b');
   const bends = (bRaw === null ? [] : bRaw.split('|').filter((x) => x !== '')).map((tok) => {
     const f = tok.split('~');
     return { ang: f[0], l2: f[1], idm: f[2], w2: f[3], idmSmooth: f[4], w2Smooth: f[5] };
   });
   if (sections.length >= 1) {
-    const e0 = get('e0'), eN = get('eN');
+    const e0 = hashParam('e0'), eN = hashParam('eN');
     sections[0].end = decodeEnd(e0);
     sections[sections.length - 1].end = decodeEnd(eN);
   }
@@ -159,7 +164,7 @@ function writeHash(params) {
   let s = 's=' + sPart + '&b=' + bPart +
     '&e0=' + encodeEnd(secs[0].end) + '&eN=' + encodeEnd(secs[secs.length - 1].end);
   // The chosen render style rides along too (omitted when it's the default), so
-  // the whole viewing state lives in the URL — no cookies or localStorage.
+  // the whole viewing state lives in the URL - no cookies or localStorage.
   if (renderStyle && renderStyle !== 'steel') s += '&render=' + renderStyle;
   // The display-unit choice rides along too (omitted when it's the default mm).
   if (state.units === 'in') s += '&units=in';
@@ -173,40 +178,39 @@ function writeHash(params) {
 }
 // Render style ↔ URL (`render`), read back on load.
 function readRenderStyle() {
-  const m = /[#&]render=([^&]*)/.exec(window.location.hash || '');
-  return m && RENDER_STYLES[m[1]] ? m[1] : null;
+  const v = hashParam('render');
+  return v && RENDER_STYLES[v] ? v : null;
 }
 // Display units ↔ URL (`units`), read back on load.
 function readUnits() {
-  return /[#&]units=in\b/.test(window.location.hash || '') ? 'in' : 'mm';
+  return hashParam('units') === 'in' ? 'in' : 'mm';
 }
 // Expanded-diagram state ↔ URL (`expanded`), read back on load.
 function readExpanded() {
-  return /[#&]expanded=1\b/.test(window.location.hash || '');
+  return hashParam('expanded') === '1';
 }
 
 // Camera pose ↔ URL. Serialized as az,pol,dist,targetX,targetY,targetZ.
 function serializeView() {
-  const r = (x, d) => Math.round(x * d) / d;
   const o = orbit;
-  return [r(o.az, 1000), r(o.pol, 1000), r(o.dist, 10), r(o.target.x, 10), r(o.target.y, 10), r(o.target.z, 10)].join(',');
+  return [round(o.az, 3), round(o.pol, 3), round(o.dist, 1), round(o.target.x, 1), round(o.target.y, 1), round(o.target.z, 1)].join(',');
 }
 function readView() {
-  const m = /[#&]view=([^&]*)/.exec(window.location.hash || '');
-  if (!m) return null;
-  const v = m[1].split(',').map(Number);
+  const raw = hashParam('view');
+  if (raw === null) return null;
+  const v = raw.split(',').map(Number);
   if (v.length < 6 || v.some((x) => !isFinite(x))) return null;
   return { az: v[0], pol: v[1], dist: v[2], tx: v[3], ty: v[4], tz: v[5] };
 }
 function applyView(v) {
   orbit.az = v.az;
-  orbit.pol = Math.max(0.08, Math.min(Math.PI - 0.08, v.pol));
-  orbit.dist = Math.max(6, Math.min(4000, v.dist));
+  orbit.pol = clampPol(v.pol);
+  orbit.dist = clampDist(v.dist);
   orbit.target.set(v.tx, v.ty, v.tz);
   userView = true; framed = true; hasCustomView = true;   // an explicit view: don't auto-reframe
   draw();
 }
-// The camera changed and the gesture ended — persist it to the URL.
+// The camera changed and the gesture ended - persist it to the URL.
 function commitView() {
   hasCustomView = true;
   writeHash(state.params);
@@ -301,12 +305,12 @@ function set(key, raw) {
     v = Number(raw);
     if (!isFinite(v)) return;
     const lim = limitOf(key);
-    if (lim) v = Math.min(lim[1], Math.max(lim[0], v));
+    if (lim) v = clamp(v, lim[0], lim[1]);
   }
   // Snapshot the params at the start of an edit gesture and work forward from it
   // each tick (rather than from the last committed values). This way any value
-  // normalize clamps down mid-drag — barb count when a section shortens, the
-  // sibling radial chamfer, a flange that no longer fits, … — recovers if the
+  // normalize clamps down mid-drag - barb count when a section shortens, the
+  // sibling radial chamfer, a flange that no longer fits, ... - recovers if the
   // drag reverses. The snapshot is dropped when the gesture ends (the input's
   // `change` event), so a clamp only becomes permanent once the slider is let go.
   if (!dragBase || dragKey !== key) { dragBase = state.params; dragKey = key; }
@@ -320,13 +324,13 @@ function set(key, raw) {
   if (cm) {
     const i = +cm[1], sib = cm[2] === 'ChY' ? 'ChIY' : 'ChY';
     const wall = next.sections[i].w;
-    next.sections[i].end[sib] = Math.max(0, Math.min(dragBase.sections[i].end[sib], Math.round((wall - v) * 100) / 100));
+    next.sections[i].end[sib] = clamp(round(wall - v, 2), 0, dragBase.sections[i].end[sib]);
   }
   commit(geo.normalize(next).p, key);
 }
 
-// Copy one section's full definition (diameter, wall, length, and — when both
-// are extremes — the end treatment) onto another. Interior sections have no end.
+// Copy one section's full definition (diameter, wall, length, and - when both
+// are extremes - the end treatment) onto another. Interior sections have no end.
 function copySection(target, source) {
   const p = geo.cloneParams(state.params);
   const s = p.sections[source], t = p.sections[target];
@@ -336,8 +340,8 @@ function copySection(target, source) {
   commit(geo.normalize(p).p, 'copy-' + target);
 }
 
-// Set a bend value (idm/w2) from its two neighbouring sections' id/w:
-// 'left'/'right' copy that neighbour's value, 'between' uses their average.
+// Set a bend value (idm/w2) from its two neighboring sections' id/w:
+// 'left'/'right' copy that neighbor's value, 'between' uses their average.
 function setBend(bendIndex, leaf, secLeaf, mode) {
   const a = state.params.sections[bendIndex][secLeaf], b = state.params.sections[bendIndex + 1][secLeaf];
   const v = mode === 'left' ? a : mode === 'right' ? b : (a + b) / 2;
@@ -426,7 +430,7 @@ function rotationBetween(a, b) {
 }
 
 // Return positions for export in the chosen orientation. 'left'/'right' rotate
-// the mesh so that end's face rests flat on the bed (Z = 0), centred in X/Y;
+// the mesh so that end's face rests flat on the bed (Z = 0), centerd in X/Y;
 // 'asis' keeps the design orientation.
 function orientPositions(positions, g, orient) {
   if (orient !== 'left' && orient !== 'right') return positions;
@@ -490,7 +494,7 @@ function renderMarkdown(md) {
     else if ((m = line.match(/^\s*\d+\.\s+(.*)$/))) { flushPara(); if (!list || list.type !== 'ol') { flushList(); list = { type: 'ol', items: [] }; } list.items.push(m[1]); }
     else if ((m = line.match(/^>\s?(.*)$/))) { flushPara(); flushList(); out.push('<blockquote>' + inline(m[1]) + '</blockquote>'); }
     // An indented, non-blank line while a list is open is the wrapped continuation
-    // of the current list item — fold it back in rather than starting a paragraph.
+    // of the current list item - fold it back in rather than starting a paragraph.
     else if (list && /^\s/.test(raw)) { list.items[list.items.length - 1] += ' ' + line.trim(); }
     else { flushList(); para.push(line.trim()); }
   }
@@ -523,7 +527,7 @@ function numCtrl(key, label, hint, step, integer, maxOverride) {
 }
 
 // An "Outer Ø" slider that edits wall thickness underneath. The stored model
-// keeps wall — geometry and every constraint depend on it — but this control
+// keeps wall - geometry and every constraint depend on it - but this control
 // shows and steers the outer diameter (inner + 2·wall), converting back to wall
 // on edit. `getInner(p)` yields the effective inner Ø (blends across a bend when
 // Continuous Ø is on). Bounds derive from the wall limits at that inner diameter.
@@ -533,20 +537,20 @@ function odCtrl(wallKey, getInner) {
   return {
     kind: 'num', derived: 'od', key: wallKey + '.OD', wallKey, getInner,
     label: 'Outer Ø', hint: 'mm', step: 0.2, numStep: 0.1,   // 0.2 Ø ↔ 0.1 wall
-    min: Math.round((inner + 2 * wlim[0]) * 10) / 10,
-    max: Math.round((inner + 2 * wlim[1]) * 10) / 10,
+    min: round(inner + 2 * wlim[0], 1),
+    max: round(inner + 2 * wlim[1], 1),
   };
 }
 // Displayed outer diameter for an Outer Ø control.
-function odValue(c, p) { return Math.round((c.getInner(p) + 2 * getP(p, c.wallKey)) * 10) / 10; }
+function odValue(c, p) { return round(c.getInner(p) + 2 * getP(p, c.wallKey), 1); }
 // Edit an Outer Ø control: convert the entered diameter to wall, route to set().
 function setOuter(c, raw) {
   if (raw === '') return;
   const od = Number(raw); if (!isFinite(od)) return;
-  set(c.wallKey, Math.round(((od - c.getInner(state.params)) / 2) * 100) / 100);
+  set(c.wallKey, round((od - c.getInner(state.params)) / 2, 2));
 }
 
-// A bend's effective inner Ø: the blend of its two neighbours when Continuous Ø
+// A bend's effective inner Ø: the blend of its two neighbors when Continuous Ø
 // is on, else its fixed idm. A section's inner Ø is just its id.
 const sectionInner = (i) => (p) => p.sections[i].id;
 const bendInner = (i) => (p) => p.bends[i].idmSmooth ? (p.sections[i].id + p.sections[i + 1].id) / 2 : p.bends[i].idm;
@@ -626,7 +630,7 @@ function groupModel(g) {
 
   for (let i = 0; i < N; i++) {
     const isFirst = i === 0, isLast = i === N - 1;
-    // Copy-from-neighbour buttons (dims + end treatment).
+    // Copy-from-neighbor buttons (dims + end treatment).
     const copyActs = [];
     if (i > 0) copyActs.push({ label: 'Mimic Previous Section', title: 'Copy the previous section onto this one', onClick: () => copySection(i, i - 1) });
     if (i < N - 1) copyActs.push({ label: 'Mimic Next Section', title: 'Copy the next section onto this one', onClick: () => copySection(i, i + 1) });
@@ -665,18 +669,18 @@ function groupModel(g) {
           ...(bend.idmSmooth ? [] : [
             numCtrl(bpre + 'idm', 'Inner Ø', 'mm', 0.5),
             { kind: 'actions', key: bpre + 'idmmatch', actions: [
-              { label: 'Set to Left', title: 'Match the left neighbour’s inner diameter', onClick: () => setBend(i, 'idm', 'id', 'left') },
-              { label: 'Set in Between', title: 'Average of the two neighbours’ inner diameters', onClick: () => setBend(i, 'idm', 'id', 'between') },
-              { label: 'Set to Right', title: 'Match the right neighbour’s inner diameter', onClick: () => setBend(i, 'idm', 'id', 'right') },
+              { label: 'Set to Left', title: 'Match the left neighbor\'s inner diameter', onClick: () => setBend(i, 'idm', 'id', 'left') },
+              { label: 'Set in Between', title: 'Average of the two neighbors\' inner diameters', onClick: () => setBend(i, 'idm', 'id', 'between') },
+              { label: 'Set to Right', title: 'Match the right neighbor\'s inner diameter', onClick: () => setBend(i, 'idm', 'id', 'right') },
             ] },
           ]),
           { kind: 'toggle', key: bpre + 'w2Smooth', label: 'Continuous thickness', title: 'Blend the wall thickness smoothly across this bend' },
           ...(bend.w2Smooth ? [] : [
             odCtrl(bpre + 'w2', bendInner(i)),
             { kind: 'actions', key: bpre + 'w2match', actions: [
-              { label: 'Set to Left', title: 'Match the left neighbour’s wall thickness', onClick: () => setBend(i, 'w2', 'w', 'left') },
-              { label: 'Set in Between', title: 'Average of the two neighbours’ wall thicknesses', onClick: () => setBend(i, 'w2', 'w', 'between') },
-              { label: 'Set to Right', title: 'Match the right neighbour’s wall thickness', onClick: () => setBend(i, 'w2', 'w', 'right') },
+              { label: 'Set to Left', title: 'Match the left neighbor\'s wall thickness', onClick: () => setBend(i, 'w2', 'w', 'left') },
+              { label: 'Set in Between', title: 'Average of the two neighbors\' wall thicknesses', onClick: () => setBend(i, 'w2', 'w', 'between') },
+              { label: 'Set to Right', title: 'Match the right neighbor\'s wall thickness', onClick: () => setBend(i, 'w2', 'w', 'right') },
             ] },
           ]),
           { kind: 'readout', key: bpre + 'outer', getWall: bendWall(i) },
@@ -732,7 +736,7 @@ const drawSchematic = () => {
 // the two would actually overlap (they're at opposite bottom corners, so this
 // only happens once the viewport is narrow enough for them to meet). Measured
 // rather than keyed off a fixed breakpoint so the card sits low whenever there's
-// room. No-op while expanded — the swapped card fills the viewer.
+// room. No-op while expanded - the swapped card fills the viewer.
 function updateSchematicPlacement() {
   const card = el.schematic, br = el.overlayBr;
   if (!card) return;
@@ -870,8 +874,8 @@ function buildPanel(groups) {
         const initVal = conv ? toDisp(rawInit) : rawInit;
         range.value = initVal;
         num.value = initVal;
-        // Convert the entered number back to mm — snapping to the nearest 1/32"
-        // first in inch mode — but pass '' through untouched so set()/setOuter()
+        // Convert the entered number back to mm - snapping to the nearest 1/32"
+        // first in inch mode - but pass '' through untouched so set()/setOuter()
         // can ignore an empty field mid-edit (rather than see 0).
         const parse = (raw) => {
           if (raw === '' || !conv) return raw;
@@ -881,7 +885,7 @@ function buildPanel(groups) {
         const onInput = c.derived === 'od'
           ? (e) => setOuter(c, parse(e.target.value))
           : (e) => set(c.key, parse(e.target.value));
-        const onChange = () => { dragBase = null; dragKey = null; };   // gesture ended — finalize any clamped-down values
+        const onChange = () => { dragBase = null; dragKey = null; };   // gesture ended - finalize any clamped-down values
         range.addEventListener('input', onInput);
         range.addEventListener('change', onChange);
         num.addEventListener('input', onInput);
@@ -910,7 +914,7 @@ function updatePanelValues(groups) {
       }
       if (c.kind === 'readout') {
         const rd = el.panelGrid.querySelector(`[data-readout="${c.key}"]`);
-        // Blends the neighbours when Continuous thickness is on (see getWall).
+        // Blends the neighbors when Continuous thickness is on (see getWall).
         const wall = toDisp(c.getWall(p));
         if (rd) rd.textContent = 'wall ' + wall.toFixed(inchMode() ? 3 : 1) + ' ' + unitSuffix();
         continue;
@@ -943,7 +947,7 @@ function updatePanelValues(groups) {
       }
     }
   }
-  // angle presets — each keyed to its own bend
+  // angle presets - each keyed to its own bend
   el.panelGrid.querySelectorAll('[data-preset]').forEach((btn) => {
     const key = btn.getAttribute('data-preset-key');
     const active = Number(getP(p, key)) === Number(btn.getAttribute('data-preset'));
@@ -974,11 +978,10 @@ function applyLayout() {
   // the collapse off this class, so the two always happen together).
   el.viewer.classList.toggle('panel-below', lay === 'bottom');
   // The panel is only forced below (there's no manual "below" option), so the
-  // left/right switcher is irrelevant then — hide it.
+  // left/right switcher is irrelevant then - hide it.
   el.layoutSwitch.style.display = lay === 'bottom' ? 'none' : '';
-  // Tighten the gaps on both sides of the mm/in toggle once the topbar is narrow.
-  el.unitsSwitch.style.marginLeft = lay === 'bottom' ? '-32px' : '';
-  el.unitsSwitch.style.marginRight = lay === 'bottom' ? '-12px' : '';
+  // The mm/in toggle's tighter margins on narrow screens live in app.css (they
+  // track viewport width, not the stored layout, so CSS owns them).
   el.layoutSwitch.querySelectorAll('button').forEach((btn) => {
     const active = btn.getAttribute('data-layout') === lay;
     btn.classList.toggle('btn-primary', active);
@@ -1000,7 +1003,7 @@ function applyUnits() {
 // ── Master render ───────────────────────────────────────────────────────────
 function render() {
   const g = geometry();
-  const mm = (v) => (Math.round(v * 10) / 10).toFixed(1);
+  const mm = (v) => round(v, 1).toFixed(1);
   const inMode = inchMode(), uSuf = unitSuffix();
   // Formatters that reproduce the mm-mode output exactly and only diverge in inch
   // mode: dv for measured lengths (was 1-dp mm), dRaw for stored diameters.
@@ -1018,7 +1021,7 @@ function render() {
     const secs = p.sections, nBend = p.bends.length;
     el.summary.textContent =
       'ø' + dRaw(secs[0].id) + ' → ø' + dRaw(secs[secs.length - 1].id) + '  ·  ' +
-      nBend + (nBend === 1 ? ' bend' : ' bends') + '  ·  ' + dv(g.path.total) + ' ' + uSuf + ' along centreline';
+      nBend + (nBend === 1 ? ' bend' : ' bends') + '  ·  ' + dv(g.path.total) + ' ' + uSuf + ' along centerline';
     el.bbox.textContent =
       dv(g.bbox.size[0]) + ' × ' + dv(g.bbox.size[1]) + ' × ' + dv(g.bbox.size[2]) + ' ' + uSuf;
     el.mesh.textContent = g.triCount.toLocaleString() + ' facets in preview · 160-segment export';
@@ -1041,7 +1044,7 @@ function render() {
     if (sig !== panelSig) { buildPanel(groups); panelSig = sig; }
     updatePanelValues(groups);
   } else {
-    el.summary.textContent = 'loading geometry engine…';
+    el.summary.textContent = 'loading geometry engine...';
   }
 
   // reflect into the 3D view and schematic
@@ -1051,20 +1054,20 @@ function render() {
 
 // ── three.js ────────────────────────────────────────────────────────────────
 // Build the three.js material for a render style. Wireframe uses an unlit basic
-// material for crisp lines; normals uses the geometry's normals for colour.
+// material for crisp lines; normals uses the geometry's normals for color.
 // Each PBR render style gets its own set of tileable maps, sampled through the
 // geometry's UVs (u = around the pipe, v = along its length):
-//   • a normal map    — a tangent-space encoding of a per-style height field, so
+//   • a normal map    - a tangent-space encoding of a per-style height field, so
 //     the relief has direction (brushed streaks, hammer dents, throwing rings);
-//   • a roughness map  — spatial shininess variation, so reflections break up;
-//   • a colour map     — faint tonal mottling multiplied over the base colour.
+//   • a roughness map  - spatial shininess variation, so reflections break up;
+//   • a color map     - faint tonal mottling multiplied over the base color.
 // Everything derives from wrap-sampled value-noise so it tiles seamlessly. The
 // per-style character lives in SURFACE below; makeMaterial just wires it up.
 
 const TEX_S = 256;                 // texture edge (px)
 
 // Returns a sampler (x,y in [0,1]) → value in [0,1]. Each octave is [n, amp] for
-// an isotropic n×n grid, or [nx, ny, amp] for a stretched grid — a high ny with
+// an isotropic n×n grid, or [nx, ny, amp] for a stretched grid - a high ny with
 // low nx gives horizontal streaks (brushed metal), and vice versa.
 function octaveSampler(octaves) {
   const specs = octaves.map((o) => (o.length === 3 ? { nx: o[0], ny: o[1], a: o[2] } : { nx: o[0], ny: o[0], a: o[1] }));
@@ -1083,11 +1086,11 @@ function octaveSampler(octaves) {
 }
 
 // Paint a tileable CanvasTexture from a per-pixel fn → value in [0,1] (grayscale)
-// or [r,g,b] each in [0,1]. `srgb` for colour data (albedo); linear otherwise.
+// or [r,g,b] each in [0,1]. `srgb` for color data (albedo); linear otherwise.
 function paintTexture(fn, { srgb = false } = {}) {
   const S = TEX_S, c = document.createElement('canvas'); c.width = c.height = S;
   const ctx = c.getContext('2d'), img = ctx.createImageData(S, S), d = img.data;
-  const q = (v) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  const q = (v) => clamp(Math.round(v * 255), 0, 255);
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
     const o = fn(x / S, y / S), i = (y * S + x) * 4;
     if (Array.isArray(o)) { d[i] = q(o[0]); d[i + 1] = q(o[1]); d[i + 2] = q(o[2]); }
@@ -1104,7 +1107,7 @@ function paintTexture(fn, { srgb = false } = {}) {
 }
 
 // Turn a height field h(x,y)→[0,1] into a tangent-space normal map. `strength`
-// scales the slopes; wrap-sampled neighbours keep it tileable.
+// scales the slopes; wrap-sampled neighbors keep it tileable.
 function buildNormalMap(height, strength) {
   const S = TEX_S, H = new Float32Array(S * S);
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) H[y * S + x] = height(x / S, y / S);
@@ -1200,7 +1203,7 @@ function makeMaterial(name) {
   return new THREE.MeshStandardMaterial({
     color: s.color, metalness: s.metalness || 0,
     roughness: s.roughness == null ? 0.5 : s.roughness,
-    map: surf.map,                                  // faint tonal mottling over colour
+    map: surf.map,                                  // faint tonal mottling over color
     roughnessMap: surf.roughnessMap,                // spatial shininess variation
     normalMap: surf.normalMap,                      // per-style directional relief
     normalScale: new THREE.Vector2(1, 1),
@@ -1218,10 +1221,10 @@ function makeEnvironment() {
     const c = document.createElement('canvas'); c.width = 512; c.height = 256;
     const ctx = c.getContext('2d');
     const g = ctx.createLinearGradient(0, 0, 0, c.height);
-    g.addColorStop(0.00, '#3a3e52');   // top — lighter "sky"
+    g.addColorStop(0.00, '#3a3e52');   // top - lighter "sky"
     g.addColorStop(0.48, '#222431');
     g.addColorStop(0.52, '#181a25');   // horizon
-    g.addColorStop(1.00, '#0e0f16');   // bottom — darker "floor"
+    g.addColorStop(1.00, '#0e0f16');   // bottom - darker "floor"
     ctx.fillStyle = g; ctx.fillRect(0, 0, c.width, c.height);
     const blob = (x, y, r, col) => {
       const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
@@ -1247,7 +1250,7 @@ function markActiveStyle() {
 function setRenderStyle(name) {
   if (!RENDER_STYLES[name]) name = 'steel';
   renderStyle = name;
-  writeHash(state.params);   // record the choice in the URL (#render=…)
+  writeHash(state.params);   // record the choice in the URL (#render=...)
   if (mesh) {
     const old = mesh.material;
     mesh.material = makeMaterial(name);
@@ -1305,7 +1308,7 @@ function initThree() {
   // Restore a camera pose from the URL, if any (overrides the auto-framing).
   const savedView = readView();
   if (savedView) applyView(savedView);
-  // one more pass once the floating card has its final rect — but a saved view
+  // one more pass once the floating card has its final rect - but a saved view
   // is explicit, so don't re-frame over it.
   setTimeout(() => { if (!hasCustomView) { framed = false; syncMesh(); } }, 60);
 }
@@ -1405,7 +1408,7 @@ function bindControls(node) {
       const [a, b] = [...ptrs.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
       const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-      orbit.dist = Math.max(6, Math.min(4000, orbit.dist * (pinchDist / dist)));   // pinch zoom
+      orbit.dist = clampDist(orbit.dist * (pinchDist / dist));                     // pinch zoom
       panBy(cx - pinchX, cy - pinchY);                                             // two-finger pan
       pinchDist = dist; pinchX = cx; pinchY = cy;
       moved = true;
@@ -1418,7 +1421,7 @@ function bindControls(node) {
     if (dx || dy) moved = true;
     if (mode === 'orbit') {
       orbit.az -= dx * 0.008;
-      orbit.pol = Math.max(0.08, Math.min(Math.PI - 0.08, orbit.pol - dy * 0.008));
+      orbit.pol = clampPol(orbit.pol - dy * 0.008);
     } else {
       panBy(dx, dy);
     }
@@ -1448,7 +1451,7 @@ function bindControls(node) {
   node.addEventListener('wheel', (e) => {
     e.preventDefault();
     userView = true;
-    orbit.dist = Math.max(6, Math.min(4000, orbit.dist * (1 + Math.sign(e.deltaY) * 0.09)));
+    orbit.dist = clampDist(orbit.dist * (1 + Math.sign(e.deltaY) * 0.09));
     draw();
     // Zoom has no "release", so persist the pose a beat after scrolling stops.
     clearTimeout(wheelTimer);
@@ -1490,9 +1493,9 @@ function applyViewOffset() {
   const w = host.clientWidth, h = host.clientHeight;
   if (!w || !h) return;
   let cx = w / 2, cy = h / 2, usable = 1;
-  // Query the card from the DOM each time — a ref captured at mount can go stale.
+  // Query the card from the DOM each time - a ref captured at mount can go stale.
   // When swapped, the 3D view is a thumbnail (the schematic no longer floats
-  // over it), so just centre the projection.
+  // over it), so just center the projection.
   const fig = swapped ? null : document.getElementById('schematic');
   if (fig && fig.offsetWidth) {
     const m = host.getBoundingClientRect();
@@ -1516,13 +1519,13 @@ function applyViewOffset() {
       usable = Math.min((best.x1 - best.x0) / w, (best.y1 - best.y0) / h);
     }
   }
-  fitK = 1 / Math.max(0.42, Math.min(1, usable));
+  fitK = 1 / clamp(usable, 0.42, 1);
   camera.setViewOffset(w, h, w / 2 - cx, h / 2 - cy, w, h);
 }
 
 function onResize() {
   applyLayout();   // may switch to/from the forced 'below' layout as the width crosses the threshold
-  // Keep the diagram's backing store matched to its box on every resize —
+  // Keep the diagram's backing store matched to its box on every resize -
   // including while expanded, when the 3D stage below is hidden and this
   // function returns early. Skipping it there let the canvas bitmap get
   // stretched non-uniformly by CSS to fill the new box.
@@ -1604,13 +1607,14 @@ function bindDiagramControls(canvas) {
     const r = canvas.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
   };
+  const clampZoom = (z) => clamp(z, DIAGRAM_ZOOM_MIN, DIAGRAM_ZOOM_MAX);
   // Zoom about the cursor: keep the point under the cursor fixed by adjusting the
   // pan so cx = panX + zoom * baseX stays true across the zoom change.
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     const [cx, cy] = localPt(e);
     const prev = diagramView.zoom;
-    const next = Math.max(DIAGRAM_ZOOM_MIN, Math.min(DIAGRAM_ZOOM_MAX, prev * Math.exp(-e.deltaY * 0.0015)));
+    const next = clampZoom(prev * Math.exp(-e.deltaY * 0.0015));
     if (next === prev) return;
     diagramView.panX = cx - (next / prev) * (cx - diagramView.panX);
     diagramView.panY = cy - (next / prev) * (cy - diagramView.panY);
@@ -1629,7 +1633,6 @@ function bindDiagramControls(canvas) {
     lastDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
     lastCx = (a.x + b.x) / 2; lastCy = (a.y + b.y) / 2;
   };
-  const clampZoom = (z) => Math.max(DIAGRAM_ZOOM_MIN, Math.min(DIAGRAM_ZOOM_MAX, z));
 
   canvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;

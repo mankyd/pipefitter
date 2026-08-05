@@ -77,8 +77,8 @@ Repo extras — **not needed to run the app**:
 
 - `pipe-geometry.js` sweeps a per-station inner/outer profile along a planar centerline
   and triangulates a closed mesh; `build(params, segments)` returns positions, indices,
-  a bounding box, a 2D silhouette, and clamp notes. It's pure and has no DOM or three.js
-  dependency, so it's easy to test in isolation (e.g. under Node).
+  a bounding box, a 2D silhouette, and clamp notes. It's pure, with no DOM or three.js
+  dependency.
 - `app.js` memoizes the geometry on the parameter signature, renders it with three.js
   (a hand-rolled orbit camera), draws the schematic via `pipe-diagram.js`, and mirrors
   the whole state into the URL hash. Every input is **clamped, never rejected**, so the

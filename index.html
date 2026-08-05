@@ -43,20 +43,16 @@
             <button class="menu-item" type="button" data-style="normals">Normals</button>
           </div>
         </div>
-        <button class="btn btn-ghost btn-copy" type="button" id="btn-copy">Copy link</button>
-        <button class="btn btn-secondary btn-undo" type="button" id="btn-undo" title="Undo (⌘Z)">Undo</button>
-        <button class="btn btn-secondary btn-redo" type="button" id="btn-redo" title="Redo (⇧⌘Z)">Redo</button>
+        <button class="btn btn-secondary btn-undo btn-icon" type="button" id="btn-undo" title="Undo (⌘Z)" aria-label="Undo">↺</button>
+        <button class="btn btn-secondary btn-redo btn-icon" type="button" id="btn-redo" title="Redo (⇧⌘Z)" aria-label="Redo">↻</button>
         <div class="menu">
-          <button class="btn btn-primary menu-trigger" type="button" aria-haspopup="true">Download STL ▾</button>
+          <button class="btn btn-primary menu-trigger" type="button" aria-haspopup="true">Download ▾</button>
           <div class="menu-list" role="menu">
+            <div class="menu-heading">STL</div>
             <button class="menu-item" type="button" data-dl="stl" data-orient="asis">Download As Is</button>
             <button class="menu-item" type="button" data-dl="stl" data-orient="left">Orient on First Face</button>
             <button class="menu-item" type="button" data-dl="stl" data-orient="right">Orient on Last Face</button>
-          </div>
-        </div>
-        <div class="menu">
-          <button class="btn btn-primary menu-trigger" type="button" aria-haspopup="true">Download 3MF ▾</button>
-          <div class="menu-list" role="menu">
+            <div class="menu-heading">3MF</div>
             <button class="menu-item" type="button" data-dl="3mf" data-orient="asis">Download As Is</button>
             <button class="menu-item" type="button" data-dl="3mf" data-orient="left">Orient on First Face</button>
             <button class="menu-item" type="button" data-dl="3mf" data-orient="right">Orient on Last Face</button>

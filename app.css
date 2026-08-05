@@ -79,14 +79,38 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   border-radius: var(--radius-sm); white-space: nowrap;
 }
 
-.actions { display: flex; gap: 8.4px; flex: 0 0 auto; }
+.actions { display: flex; align-items: center; gap: 8.4px; flex: 0 0 auto; }
 .actions .btn { white-space: nowrap; flex: 0 0 auto; font-size: 12px; }
-.actions .btn-copy { padding: 6px 12px; }
 .actions .btn-undo, .actions .btn-redo { padding: 6px 11px; }
 .actions .menu-trigger { padding: 6px 12px; }
 .actions .btn-help {
   width: 28px; padding: 6px 0; font-size: 13px; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
+}
+/* Undo/Redo collapsed to gapped circle-arrow icons on narrow screens. */
+.actions .btn-icon {
+  width: 28px; padding: 6px 0; font-size: 16px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* Below this the brand and the controls can't share a row without the
+   (negatively-margined) unit toggle overlapping the title, so wrap the brand
+   onto its own line above the controls and drop the now-pointless negative
+   margins (which would otherwise hang the toggle off the row's left edge). */
+@media (max-width: 790px) {
+  /* Brand wraps to its own line; the tighter column-gap keeps every control
+     button (toggle + actions) together on the single line below it. */
+  .topbar { flex-wrap: wrap; row-gap: 8px; column-gap: 12px; justify-content: flex-end; }
+  .brand { flex-basis: 100%; }
+  .units-switch { margin: 0 !important; }
+}
+/* Phone widths (e.g. iPhone 12 Pro, 390px): shrink padding, gaps, and the
+   menu-trigger buttons further so the control row still fits on one line. */
+@media (max-width: 480px) {
+  .topbar { padding-left: 8px; padding-right: 8px; column-gap: 6px; }
+  .units-switch .btn { padding: 4px 7px; }
+  .actions { gap: 5px; }
+  .actions .menu-trigger { padding: 6px 8px; }
 }
 
 /* ── Download hover menus ─────────────────────────────────────────────────── */
@@ -103,6 +127,13 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 /* A transparent bridge over the 4px gap keeps hover continuous. */
 .menu-list::before { content: ''; position: absolute; left: 0; right: 0; top: -4px; height: 4px; }
 .menu:hover .menu-list, .menu:focus-within .menu-list { display: flex; }
+.menu-heading {
+  padding: 6px 10px 2px; font-family: var(--font-body);
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--color-neutral-500);
+}
+/* A heading that follows items is the 2nd group (3MF) — space it off from the first. */
+.menu-item + .menu-heading { margin-top: 4px; }
 .menu-item {
   display: block; width: 100%; text-align: left; white-space: nowrap;
   padding: 6px 10px; font-family: var(--font-body); font-size: 12px;
@@ -279,8 +310,10 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   overflow: hidden;
   background: radial-gradient(120% 90% at 50% 15%, #20222f 0%, var(--color-bg) 70%);
 }
-.stage { position: absolute; inset: 0; cursor: grab; z-index: 1; }
-.stage canvas { display: block; }
+/* touch-action: none stops the browser from claiming a touch-drag as a page
+   scroll/gesture mid-orbit (which fires pointercancel and freezes the drag). */
+.stage { position: absolute; inset: 0; cursor: grab; z-index: 1; touch-action: none; }
+.stage canvas { display: block; touch-action: none; }
 
 .overlay { position: absolute; z-index: 3; }
 .overlay-tl {

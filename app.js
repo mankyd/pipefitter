@@ -14,7 +14,6 @@ const el = {
   summary: document.getElementById('summary'),
   layoutSwitch: document.getElementById('layout-switch'),
   unitsSwitch: document.getElementById('units-switch'),
-  copy: document.getElementById('btn-copy'),
   undo: document.getElementById('btn-undo'),
   redo: document.getElementById('btn-redo'),
   reset: document.getElementById('btn-reset'),
@@ -42,7 +41,6 @@ const state = {
   params: null,       // the clamped { sections, bends } model — single source of truth
   layout: 'left',     // 'left' | 'right' | 'bottom'
   units: 'mm',        // display units only — 'mm' | 'in'; geometry is always mm
-  copied: false,      // drives the "Link copied" label
 };
 
 // Display-unit conversion. The model is stored in millimetres end to end; these
@@ -224,7 +222,6 @@ function commit(params, key) {
   lastKey = key;
   lastT = now;
   state.params = params;
-  state.copied = false;
   writeHash(params);
   render();
 }
@@ -237,7 +234,6 @@ function step(dir) {
   (dir === 'undo' ? redoStack : undoStack).push(state.params);
   lastKey = null;
   state.params = params;
-  state.copied = false;
   writeHash(params);
   render();
 }
@@ -466,43 +462,6 @@ function exportModel(ext, serialize, orient) {
 }
 const downloadSTL = (orient) => exportModel('stl', geo.toBinarySTL, orient);
 const download3MF = (orient) => exportModel('3mf', geo.to3MF, orient);
-
-function copyLink() {
-  const url = window.location.href;
-  const confirm = () => {
-    state.copied = true;
-    render();
-    setTimeout(() => { state.copied = false; render(); }, 1600);
-  };
-  // The async Clipboard API needs a secure context (https / localhost) and page
-  // focus, and can reject; fall back to a temporary textarea + execCommand,
-  // which works from the click gesture on plain-http origins and old browsers.
-  // Only confirm when a copy actually succeeded.
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(url).then(confirm, () => { if (legacyCopy(url)) confirm(); });
-  } else if (legacyCopy(url)) {
-    confirm();
-  }
-}
-
-function legacyCopy(text) {
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '-9999px';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  } catch (e) {
-    return false;
-  }
-}
 
 // ── Help modal ──────────────────────────────────────────────────────────────
 // Minimal, dependency-free Markdown → HTML: headings, lists, blockquotes, rules,
@@ -991,12 +950,15 @@ function applyLayout() {
   el.body.style.flexDirection = lay === 'right' ? 'row-reverse'
     : lay === 'bottom' ? 'column-reverse' : 'row';
   el.panel.style.width = lay === 'bottom' ? '100%' : '316px';
-  el.panel.style.height = lay === 'bottom' ? '258px' : '100%';
+  el.panel.style.height = lay === 'bottom' ? '370px' : '100%';
   el.panelGrid.style.gridAutoFlow = lay === 'bottom' ? 'column' : 'row';
   el.panelGrid.style.gridAutoColumns = lay === 'bottom' ? 'minmax(236px, 1fr)' : 'auto';
   // The panel is only forced below (there's no manual "below" option), so the
   // left/right switcher is irrelevant then — hide it.
   el.layoutSwitch.style.display = lay === 'bottom' ? 'none' : '';
+  // Tighten the gaps on both sides of the mm/in toggle once the topbar is narrow.
+  el.unitsSwitch.style.marginLeft = lay === 'bottom' ? '-32px' : '';
+  el.unitsSwitch.style.marginRight = lay === 'bottom' ? '-12px' : '';
   el.layoutSwitch.querySelectorAll('button').forEach((btn) => {
     const active = btn.getAttribute('data-layout') === lay;
     btn.classList.toggle('btn-primary', active);
@@ -1026,7 +988,6 @@ function render() {
   const dRaw = (v) => inMode ? (v / MM_PER_IN).toFixed(3) : v;
 
   // header + overlays
-  el.copy.textContent = state.copied ? 'Link copied' : 'Copy link';
   el.undo.disabled = !undoStack.length;
   el.redo.disabled = !redoStack.length;
   applyLayout();
@@ -1381,15 +1342,57 @@ function syncMesh(first) {
 }
 
 function bindControls(node) {
+  // Active pointers by id, so a second touch can drive a two-finger gesture
+  // (pinch to zoom + drag to pan) instead of just resetting the single-drag.
+  const ptrs = new Map();
   let mode = null, lx = 0, ly = 0, moved = false;
+  let pinchDist = 0, pinchX = 0, pinchY = 0;   // two-finger baseline
+
+  // Pan the orbit target by a screen delta, using the exact screen→world scale on
+  // the plane through the target so a dragged point stays under the finger/cursor.
+  const panBy = (dx, dy) => {
+    userView = true;
+    const vh = el.stage.clientHeight || 1;
+    const k = (2 * orbit.dist * Math.tan((camera.fov * Math.PI) / 360)) / vh;
+    const right = new THREE.Vector3().crossVectors(camera.up, dirToCam()).normalize();
+    const up = new THREE.Vector3().crossVectors(dirToCam(), right).normalize();
+    orbit.target.addScaledVector(right, -dx * k);
+    orbit.target.addScaledVector(up, dy * k);
+  };
+  // (Re)capture the distance and midpoint between the two active pointers.
+  const gestureBaseline = () => {
+    const [a, b] = [...ptrs.values()];
+    pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    pinchX = (a.x + b.x) / 2; pinchY = (a.y + b.y) / 2;
+  };
+
   const down = (e) => {
-    mode = e.shiftKey || e.button === 1 || e.button === 2 ? 'pan' : 'orbit';
-    lx = e.clientX; ly = e.clientY; moved = false;
-    node.style.cursor = 'grabbing';
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     node.setPointerCapture(e.pointerId);
+    node.style.cursor = 'grabbing';
+    if (ptrs.size === 1) {
+      mode = e.shiftKey || e.button === 1 || e.button === 2 ? 'pan' : 'orbit';
+      lx = e.clientX; ly = e.clientY; moved = false;
+    } else if (ptrs.size === 2) {
+      mode = 'gesture';
+      gestureBaseline();
+    }
   };
   const move = (e) => {
-    if (!mode) return;
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'gesture' && ptrs.size >= 2) {
+      const [a, b] = [...ptrs.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      orbit.dist = Math.max(6, Math.min(4000, orbit.dist * (pinchDist / dist)));   // pinch zoom
+      panBy(cx - pinchX, cy - pinchY);                                             // two-finger pan
+      pinchDist = dist; pinchX = cx; pinchY = cy;
+      moved = true;
+      draw();
+      return;
+    }
+    if (!mode || mode === 'gesture') return;
     const dx = e.clientX - lx, dy = e.clientY - ly;
     lx = e.clientX; ly = e.clientY;
     if (dx || dy) moved = true;
@@ -1397,24 +1400,25 @@ function bindControls(node) {
       orbit.az -= dx * 0.008;
       orbit.pol = Math.max(0.08, Math.min(Math.PI - 0.08, orbit.pol - dy * 0.008));
     } else {
-      userView = true;
-      // exact screen→world scale on the plane through the orbit target, so a
-      // dragged point stays under the cursor
-      const vh = el.stage.clientHeight || 1;
-      const k = (2 * orbit.dist * Math.tan((camera.fov * Math.PI) / 360)) / vh;
-      const right = new THREE.Vector3().crossVectors(camera.up, dirToCam()).normalize();
-      const up = new THREE.Vector3().crossVectors(dirToCam(), right).normalize();
-      orbit.target.addScaledVector(right, -dx * k);
-      orbit.target.addScaledVector(up, dy * k);
+      panBy(dx, dy);
     }
     draw();
   };
   const up = (e) => {
-    // Only write the URL once the drag ends (not on every move), and only if the
-    // camera actually moved.
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.delete(e.pointerId);
+    try { node.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    if (ptrs.size === 1) {
+      // Two fingers dropped to one: resume orbiting from the finger left on screen
+      // (reset the baseline so the view doesn't jump).
+      const [p] = [...ptrs.values()];
+      mode = 'orbit'; lx = p.x; ly = p.y;
+      return;
+    }
+    if (ptrs.size >= 2) { gestureBaseline(); return; }
+    // Last pointer up: write the URL once, only if the camera actually moved.
     if (mode && moved) commitView();
     mode = null; moved = false; node.style.cursor = 'grab';
-    try { node.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
   };
   node.addEventListener('pointerdown', down);
   node.addEventListener('pointermove', move);
@@ -1595,32 +1599,58 @@ function bindDiagramControls(canvas) {
     drawSchematic();
   }, { passive: false });
 
-  // Drag to pan. Pointer capture keeps the drag alive off the canvas edge.
-  let dragging = false, lastX = 0, lastY = 0;
+  // Drag to pan; two fingers to pinch-zoom and pan together. Active pointers are
+  // tracked by id (local canvas coords) so a second touch drives a gesture rather
+  // than resetting the drag. Pointer capture keeps a drag alive off the edge.
+  const ptrs = new Map();
+  let lastDist = 0, lastCx = 0, lastCy = 0;   // two-finger baseline
+  const gestureBaseline = () => {
+    const [a, b] = [...ptrs.values()];
+    lastDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    lastCx = (a.x + b.x) / 2; lastCy = (a.y + b.y) / 2;
+  };
+  const clampZoom = (z) => Math.max(DIAGRAM_ZOOM_MIN, Math.min(DIAGRAM_ZOOM_MAX, z));
+
   canvas.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    dragging = true;
-    [lastX, lastY] = localPt(e);
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const [x, y] = localPt(e);
+    ptrs.set(e.pointerId, { x, y });
     canvas.setPointerCapture(e.pointerId);
     canvas.style.cursor = 'grabbing';
+    if (ptrs.size === 2) gestureBaseline();
   });
   canvas.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
+    const prev = ptrs.get(e.pointerId);
+    if (!prev) return;
     const [x, y] = localPt(e);
-    diagramView.panX += x - lastX;
-    diagramView.panY += y - lastY;
-    lastX = x; lastY = y;
+    ptrs.set(e.pointerId, { x, y });
+    if (ptrs.size >= 2) {
+      const [a, b] = [...ptrs.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      diagramView.panX += cx - lastCx;                 // two-finger pan (centroid move)
+      diagramView.panY += cy - lastCy;
+      const pz = diagramView.zoom, nz = clampZoom(pz * (dist / lastDist));   // pinch zoom
+      diagramView.panX = cx - (nz / pz) * (cx - diagramView.panX);           // about the centroid
+      diagramView.panY = cy - (nz / pz) * (cy - diagramView.panY);
+      diagramView.zoom = nz;
+      lastDist = dist; lastCx = cx; lastCy = cy;
+    } else {
+      diagramView.panX += x - prev.x;                  // single-pointer pan
+      diagramView.panY += y - prev.y;
+    }
     syncDiagramReset();
     drawSchematic();
   });
-  const endDrag = (e) => {
-    if (!dragging) return;
-    dragging = false;
-    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-    canvas.style.cursor = '';
+  const endPtr = (e) => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.delete(e.pointerId);
+    try { canvas.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    if (ptrs.size === 2) gestureBaseline();            // three→two fingers: re-baseline
+    if (ptrs.size === 0) canvas.style.cursor = '';
   };
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointerup', endPtr);
+  canvas.addEventListener('pointercancel', endPtr);
 
   // Double-click snaps back to the fit.
   canvas.addEventListener('dblclick', (e) => {
@@ -1664,7 +1694,6 @@ function init() {
   el.unitsSwitch.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', () => setUnits(btn.getAttribute('data-units')));
   });
-  el.copy.addEventListener('click', copyLink);
   el.undo.addEventListener('click', () => step('undo'));
   el.redo.addEventListener('click', () => step('redo'));
   document.querySelectorAll('.menu-item[data-dl]').forEach((item) => {

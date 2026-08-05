@@ -221,6 +221,17 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 }
 .pnl::-webkit-scrollbar { width: 9px; }
 .pnl::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border-radius: 5px; }
+/* Collapse/Expand-all bar, pinned to the top of the scrolling panel so it stays
+   visible. Opaque background covers group content scrolling underneath. Hidden
+   in the bottom layout (set from applyLayout). */
+.panel-toolbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; gap: 8px;
+  padding: 10px 16.8px;
+  background: #1a1c29;
+  border-bottom: 1px solid var(--color-neutral-900);
+}
+.panel-toolbar .btn { flex: 1 1 0; padding: 5px 8px; font-size: 11px; }
 .panel-grid { display: grid; gap: 22.4px; padding: 16.8px; }
 
 .group { display: flex; flex-direction: column; gap: 2.8px; min-width: 0; }
@@ -426,14 +437,13 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .schematic-reset[hidden] { display: none; }
 .viewer.swapped .schematic-reset { z-index: 6; }
 
-/* On narrow screens the docked card collapses to just its caption (title +
-   expand button); expanding it still shows the full drawing. */
-@media (max-width: 590px) {
-  .viewer:not(.swapped) .schematic { width: auto; }
-  .viewer:not(.swapped) .schematic-cap { border-bottom: 0; gap: 14px; }
-  .viewer:not(.swapped) .schematic-canvas,
-  .viewer:not(.swapped) .schematic-reset { display: none; }
-}
+/* Whenever the panel is docked below (the `panel-below` class, set from
+   applyLayout at the same breakpoint), the docked card collapses to just its
+   caption (title + expand button); expanding it still shows the full drawing. */
+.viewer.panel-below:not(.swapped) .schematic { width: auto; }
+.viewer.panel-below:not(.swapped) .schematic-cap { border-bottom: 0; gap: 14px; }
+.viewer.panel-below:not(.swapped) .schematic-canvas,
+.viewer.panel-below:not(.swapped) .schematic-reset { display: none; }
 /* Lifted above the copyright/coffee row only when JS detects the docked card
    would otherwise overlap it (see updateSchematicPlacement). */
 .viewer:not(.swapped) .schematic.raised { bottom: 55px; }

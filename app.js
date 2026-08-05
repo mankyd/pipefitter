@@ -23,6 +23,9 @@ const el = {
   helpBody: document.getElementById('help-body'),
   body: document.getElementById('body'),
   panel: document.getElementById('panel'),
+  panelToolbar: document.getElementById('panel-toolbar'),
+  collapseAll: document.getElementById('btn-collapse-all'),
+  expandAll: document.getElementById('btn-expand-all'),
   panelGrid: document.getElementById('panel-grid'),
   stage: document.getElementById('stage'),
   bbox: document.getElementById('bbox'),
@@ -689,7 +692,19 @@ function groupModel(g) {
 // end-treatment types). Plain value changes update inputs in place, so a slider
 // drag or a number edit keeps focus and pointer capture.
 let panelSig = '';
-const collapsedGroups = new Set();   // group tags whose body is collapsed (persists across rebuilds)
+const collapsedGroups = new Set();   // group ids whose body is collapsed (persists across rebuilds)
+
+// Collapse or expand every group at once (the panel toolbar). Updates the live
+// DOM and keeps `collapsedGroups` in sync so the state survives a panel rebuild.
+function setAllCollapsed(collapsed) {
+  collapsedGroups.clear();
+  el.panelGrid.querySelectorAll('.group').forEach((section) => {
+    section.classList.toggle('collapsed', collapsed);
+    const toggle = section.querySelector('.group-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
+    if (collapsed) collapsedGroups.add(section.getAttribute('data-group-id'));
+  });
+}
 
 // Which pipe segment the pointer is over (drives the schematic highlight):
 // null, or { kind: 'section' | 'bend', index }.
@@ -740,7 +755,7 @@ function h(tag, cls, attrs) {
 function buildPanel(groups) {
   el.panelGrid.replaceChildren();
   for (const g of groups) {
-    const section = h('section', 'group');
+    const section = h('section', 'group', { 'data-group-id': g.id });
     const collapsed = collapsedGroups.has(g.id);
     if (collapsed) section.classList.add('collapsed');
 
@@ -953,6 +968,11 @@ function applyLayout() {
   el.panel.style.height = lay === 'bottom' ? '370px' : '100%';
   el.panelGrid.style.gridAutoFlow = lay === 'bottom' ? 'column' : 'row';
   el.panelGrid.style.gridAutoColumns = lay === 'bottom' ? 'minmax(236px, 1fr)' : 'auto';
+  // Collapse/Expand-all bar only makes sense for the vertical left/right panel.
+  el.panelToolbar.style.display = lay === 'bottom' ? 'none' : '';
+  // Minimize the docked cross-section diagram on the same breakpoint (CSS keys
+  // the collapse off this class, so the two always happen together).
+  el.viewer.classList.toggle('panel-below', lay === 'bottom');
   // The panel is only forced below (there's no manual "below" option), so the
   // left/right switcher is irrelevant then — hide it.
   el.layoutSwitch.style.display = lay === 'bottom' ? 'none' : '';
@@ -1694,6 +1714,8 @@ function init() {
   el.unitsSwitch.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', () => setUnits(btn.getAttribute('data-units')));
   });
+  el.collapseAll.addEventListener('click', () => setAllCollapsed(true));
+  el.expandAll.addEventListener('click', () => setAllCollapsed(false));
   el.undo.addEventListener('click', () => step('undo'));
   el.redo.addEventListener('click', () => step('redo'));
   document.querySelectorAll('.menu-item[data-dl]').forEach((item) => {

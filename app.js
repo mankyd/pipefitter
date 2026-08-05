@@ -372,7 +372,12 @@ function bendFrom(sec) {
 // prepends (the copy becomes the new first, shifting the rest along); the last
 // appends. Only first/last sections expose the button, so these are the only
 // cases. structuralEdit re-homes the end treatments onto the new extremes.
+// A collapsed source section spawns its new section and bend collapsed too.
 function addSectionBefore(i) {
+  const collapse = collapsedGroups.has('s' + i);
+  shiftCollapsed('s', i, 1);                         // section i and everything after it move up one
+  shiftCollapsed('b', i, 1);                         // (prepend inserts a bend at i as well)
+  if (collapse) { collapsedGroups.add('s' + i); collapsedGroups.add('b' + i); }
   structuralEdit((p) => {
     const sec = p.sections[i];
     p.sections.splice(i, 0, { id: sec.id, w: sec.w, l: sec.l });
@@ -380,6 +385,10 @@ function addSectionBefore(i) {
   }, 'add-before-' + i);
 }
 function addSectionAfter(i) {
+  // i is the last section, so the new section (i+1) and new bend (i) sit at the
+  // end and nothing existing is renumbered.
+  const collapse = collapsedGroups.has('s' + i);
+  if (collapse) { collapsedGroups.add('s' + (i + 1)); collapsedGroups.add('b' + i); }
   structuralEdit((p) => {
     const sec = p.sections[i];
     p.sections.splice(i + 1, 0, { id: sec.id, w: sec.w, l: sec.l });
@@ -388,9 +397,12 @@ function addSectionAfter(i) {
 }
 function removeSection(i) {
   if (state.params.sections.length <= 2) return;   // keep at least two
+  const b = i > 0 ? i - 1 : 0;                      // the adjacent bend that goes with it
+  collapsedGroups.delete('s' + i); shiftCollapsed('s', i + 1, -1);
+  collapsedGroups.delete('b' + b); shiftCollapsed('b', b + 1, -1);
   structuralEdit((p) => {
     p.sections.splice(i, 1);
-    p.bends.splice(i > 0 ? i - 1 : 0, 1);           // drop an adjacent bend
+    p.bends.splice(b, 1);                            // drop an adjacent bend
   }, 'remove-' + i);
 }
 
@@ -697,6 +709,21 @@ function groupModel(g) {
 // drag or a number edit keeps focus and pointer capture.
 let panelSig = '';
 const collapsedGroups = new Set();   // group ids whose body is collapsed (persists across rebuilds)
+
+// Group ids are positional (s<i>/b<i>), so an insert or remove that renumbers
+// sections/bends has to renumber the stored collapsed ids in step - otherwise a
+// collapsed state stays pinned to an index and jumps to whichever group lands
+// there. Shift every `prefix` ('s' or 'b') id at or past `from` by `delta`.
+function shiftCollapsed(prefix, from, delta) {
+  const next = new Set();
+  for (const id of collapsedGroups) {
+    const m = /^([sb])(\d+)$/.exec(id);
+    if (m && m[1] === prefix && +m[2] >= from) next.add(m[1] + (+m[2] + delta));
+    else next.add(id);
+  }
+  collapsedGroups.clear();
+  next.forEach((id) => collapsedGroups.add(id));
+}
 
 // Collapse or expand every group at once (the panel toolbar). Updates the live
 // DOM and keeps `collapsedGroups` in sync so the state survives a panel rebuild.

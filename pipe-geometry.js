@@ -15,13 +15,6 @@ const round = (v, dp) => { const f = 10 ** dp; return Math.round(v * f) / f; };
 const smooth = (t) => t * t * (3 - 2 * t);
 const lerp = (a, b, t) => a + (b - a) * t;
 
-// Inner-bend thickness guard (see makePath): how thick the concave bend wall must
-// be, as a fraction of the attainable limit (the thinnest wall the bend carries;
-// perpendicular thickness only reaches that limit as R→∞), and how far the arc
-// may be stretched to get there, as a multiple of the outer-radius change Δr.
-const PERP_THICKNESS_FRACTION = 0.9;
-const PERP_ARC_CAP_MULT = 4;
-
 // ── Parameter limits ─────────────────────────────────────────────────────────
 export const SECTION_LIMITS = { id: [1, 120], w: [0.4, 20], l: [3, 200] };
 export const BEND_LIMITS = {
@@ -263,31 +256,20 @@ function makePath(p) {
       let R = sol.R;
       let arcLen = bent ? R * Math.abs(A) : bd.l2;
       let faceClamped = sol.clamped;
-      // Keep the inner (concave) transition wall from being drawn impossibly thin.
-      // The bend owns the diameter/wall reduction, so a large Ø change packed into
-      // a short transition becomes a near-radial cliff whose PERPENDICULAR
-      // thickness (the real material, measured normal to the surface — not
-      // radially, and not the inner-face arc, which is inflated by radial travel)
-      // collapses toward zero. Lengthen the transition until that thickness
-      // reaches the wall it carries. This is expressed in the transition LENGTH so
-      // it works identically for a turning bend and a straight (0°) reducer: for a
-      // bend the length is the arc R·A, so a longer length is a larger R. The
-      // attainable limit is transitionMinWall (reached only as the length→∞), so
-      // aim at a fraction of it and cap the length so a shallow reduction can't
-      // balloon without bound. Length only ever grows, so a user's larger l2 is
-      // preserved.
+      // Floor a Ø change's length. A STRAIGHT reduction is an even-thickness wall:
+      // a large Ø change becomes a square shoulder (shoulderRibbon) floored at its
+      // vertical footprint (~2.7× wall, regardless of Ø change); a small one stays
+      // a smooth shell floored where its bore would neck. A larger l2 just leans
+      // the shoulder into a gentler slope. A BENT reduction is a smooth cone; too
+      // short an arc thins its wall, so floor at a multiple of the Ø change Δr.
       let lenFloored = false;
       const dR = transitionDeltaOuter(tr);
-      if (dR > 1e-6) {                                   // only reducing/expanding transitions are at risk
-        const target = PERP_THICKNESS_FRACTION * transitionMinWall(tr);
-        if (innerPerpThickness(tr, A, arcLen) < target) {
-          let need = solvePerpLength(tr, A, target) ?? Infinity;
-          need = Math.min(need, PERP_ARC_CAP_MULT * dR);   // cap the transition length at N·Δr
-          if (need > arcLen) {
-            arcLen = need;
-            if (bent) { R = arcLen / Math.abs(A); faceClamped = false; }
-            lenFloored = true;
-          }
+      if (dR > 1e-6) {
+        const minLen = bent ? BENT_CONE_LENGTH_MULT * dR : straightFloor(tr);
+        if (arcLen < minLen) {
+          arcLen = minLen;
+          if (bent) { R = arcLen / Math.abs(A); faceClamped = false; }
+          lenFloored = true;
         }
       }
       const minFace = bent ? innerFaceLength(tr, Math.abs(A), minBendRadius(tr)) : 0;
@@ -308,8 +290,7 @@ function makePath(p) {
         P = [P[0] + arcLen * dir2[0], P[1] + arcLen * dir2[1], 0];
       }
       const wallLimit = transitionMinWall(tr);
-      const perpThk = dR > 1e-6 ? innerPerpThickness(tr, A, arcLen) : wallLimit;
-      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, lenFloored, perpThk, wallLimit, sStart, sEnd });
+      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, lenFloored, wallLimit, sStart, sEnd });
       s = sEnd;
     }
   }
@@ -349,11 +330,18 @@ function innerFaceLength(tr, A, R) {
   return len;
 }
 
-// Smallest R that keeps the inner face clear of the centerline, plus margin.
+// Smallest R that keeps the concave face clear of the centerline. A flat 2%
+// margin lets the concave outer surface pass within 0.02·maxOuter of the pivot
+// on a big-Ø-ratio bend — a razor cusp the constant-thickness bore can't rescue
+// (it's the *outer* surface that's degenerate). Floor that clearance at a wall
+// thickness instead. (For a straight run there is no bend, so this is unused.)
 function minBendRadius(tr) {
   let mx = 0;
   for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
-  return mx * 1.02;
+  // A reduction shouldered inside a bend pinches the concave wall the tighter the
+  // bend; keep the concave face a couple of wall thicknesses off the pivot so a
+  // shallow/moderate bend keeps full walls (a sharp bend still compresses some).
+  return mx + Math.max(2 * transitionMaxWall(tr), 0.02 * mx);
 }
 
 // The thinnest wall the transition carries, and its total outer-radius change.
@@ -370,42 +358,6 @@ function transitionDeltaOuter(tr) {
   return mx - mn;
 }
 
-// True material thickness of the inner (concave) transition wall, measured
-// PERPENDICULAR to the surface rather than radially — the same physics whether
-// the transition turns (an arc) or runs straight (a 0° reducer), so it is
-// written once in terms of the transition length `len`. As parameter t sweeps
-// 0→1 the concave outer surface advances `tang = len − |A|·outer(t)` along the
-// surface (for a straight run |A|=0, so tang = len; for an arc this is exactly
-// ρ·A with ρ = R−outer, len = R·A) while moving `outer'` radially. The bore is
-// the same curve offset radially by wall(t); that radial offset projects to a
-// perpendicular gap of wall·tang/√(outer'² + tang²), which collapses as the ramp
-// steepens even though the radial wall is unchanged. Returns the min over t;
-// monotonically increasing in `len`.
-function innerPerpThickness(tr, A, len) {
-  const n = 200; let mn = Infinity;
-  for (let i = 0; i <= n; i++) {
-    const t = i / n;
-    const { wall } = transitionAt(tr, t);
-    const tang = len - Math.abs(A) * outerAtT(tr, t);
-    if (tang <= 0) return 0;                       // concave face has reached/crossed the pivot
-    const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
-    const dOuter = (outerAtT(tr, tp) - outerAtT(tr, tm)) / (tp - tm);
-    mn = Math.min(mn, wall * tang / Math.hypot(dOuter, tang));
-  }
-  return mn;
-}
-
-// Smallest transition length whose inner perpendicular thickness reaches `target`.
-// Monotonic in `len`, so bisect. Returns null if even a very long transition
-// can't reach it (target above the attainable limit, transitionMinWall).
-function solvePerpLength(tr, A, target) {
-  let lo = 0;
-  let hi = Math.max(target, 1);
-  for (let k = 0; k < 60 && innerPerpThickness(tr, A, hi) < target; k++) hi *= 2;
-  if (innerPerpThickness(tr, A, hi) < target) return null;
-  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (innerPerpThickness(tr, A, mid) < target) lo = mid; else hi = mid; }
-  return (lo + hi) / 2;
-}
 
 // Solve R so the inner face arc equals the requested length. Monotonic in R.
 function solveBendRadius(tr, A, target) {
@@ -420,8 +372,174 @@ function solveBendRadius(tr, A, target) {
   return { R: (lo + hi) / 2, clamped: false };
 }
 
+// The maximum wall thickness a transition carries.
+function transitionMaxWall(tr) {
+  let mx = 0;
+  for (let i = 0; i <= 40; i++) mx = Math.max(mx, transitionAt(tr, i / 40).wall);
+  return mx;
+}
+
+// A bent reduction is a smooth cone; floor its arc length at this multiple of the
+// outer-radius change so the cone ramps gently enough to keep full-thickness walls.
+const BENT_CONE_LENGTH_MULT = 1.6;
+
+// Bore of a straight reducer as a CONSTANT-THICKNESS SHELL: the bore is the outer
+// surface offset inward PERPENDICULARLY by the wall, so the wall is an even-
+// thickness band the whole way — steep and near-vertical when the transition is
+// short, a gentle slope when it's long — never a chunky plate. A radial gap g
+// under an outer surface rising dOuter per unit t (advancing `len` axially per
+// unit t) projects to a perpendicular thickness g·len/√(dOuter²+len²); solving
+// for a perpendicular thickness of one wall gives g = wall·√(dOuter²+len²)/len.
+// dOuter=0 at both ends, so the bore meets the neighbour bores cleanly.
+function shellInnerRadius(seg, sQuery) {
+  const tr = seg.tr, len = seg.sEnd - seg.sStart;
+  if (len <= 1e-9) return transitionAt(tr, 1).inner;
+  const t = clamp((sQuery - seg.sStart) / len, 0, 1);
+  const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
+  const dO = (outerAtT(tr, tp) - outerAtT(tr, tm)) / (tp - tm);
+  const w = transitionAt(tr, t).wall;
+  return outerAtT(tr, t) - w * Math.hypot(dO, len) / len;
+}
+
+// Shortest straight reducer whose constant-thickness bore stays monotonic (doesn't
+// neck past the inlet). Below this the even-thickness wall would have to fold — the
+// point where a truly compact reducer would need a bore ledge instead. The bore
+// runs iA→iB, so "monotonic" means non-decreasing when iB>iA and non-increasing
+// otherwise. Capped at 6·Δouter; if the bore is non-monotonic even there (e.g. a
+// middle Ø that pinches below both ends), just use the cap.
+function minShellLength(tr) {
+  const iA = transitionAt(tr, 0).inner, iB = transitionAt(tr, 1).inner;
+  const inc = iB >= iA;
+  const cap = 6 * Math.max(transitionDeltaOuter(tr), transitionMaxWall(tr));
+  const monotonic = (len) => {
+    let prev = inc ? -Infinity : Infinity;
+    for (let i = 0; i <= 200; i++) {
+      const t = i / 200;
+      const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
+      const dO = (outerAtT(tr, tp) - outerAtT(tr, tm)) / (tp - tm);
+      const b = outerAtT(tr, t) - transitionAt(tr, t).wall * Math.hypot(dO, len) / len;
+      if (inc ? b < prev - 1e-6 : b > prev + 1e-6) return false;
+      prev = b;
+    }
+    return true;
+  };
+  if (!monotonic(cap)) return cap;
+  let lo = 1e-3, hi = cap;
+  for (let i = 0; i < 44; i++) { const m = (lo + hi) / 2; if (monotonic(m)) hi = m; else lo = m; }
+  return hi * 1.05;
+}
+
+// ── Square-shoulder reducer ──────────────────────────────────────────────────
+// A straight transition with a large Ø change is drawn as an even-thickness
+// RIBBON: the wall's centerline runs axially, turns (up to 90°) toward radial,
+// crosses the Ø change, and turns back, with rounded corners. Both surfaces are
+// the ±wall/2 offsets of that one path, so the wall is even everywhere — the
+// thickness follows transitionAt (Continuous thickness blends neighbor walls; a
+// defined w2 lands at the shoulder's middle). Short l2 → near-vertical shoulder;
+// larger l2 leans the middle leg into an ever gentler slope, one continuous
+// family. The outer/bore meridians are emitted as polylines (they are vertical
+// in places, so they are spliced into the station list rather than sampled
+// through profileAt).
+const SHOULDER_CORNER = 0.75;   // corner radius, × the thickest wall
+const SHOULDER_MARGIN = 0.1;    // straight lead-in at each end, × the thickest wall
+
+// The ribbon needs the radial travel to exceed the wall (otherwise there is no
+// room for the corners) and a continuous Ø (a fixed middle Ø must be honored by
+// the smooth profile instead).
+function ribbonApplies(tr) {
+  if (!tr.idmSmooth) return false;
+  const A0 = transitionAt(tr, 0), B0 = transitionAt(tr, 1);
+  const dm = Math.abs((B0.inner + B0.wall / 2) - (A0.inner + A0.wall / 2));
+  return dm >= 1.05 * transitionMaxWall(tr);
+}
+
+// Minimum length of a straight transition: the vertical-shoulder footprint when
+// the ribbon applies, else the even-shell fold limit.
+function straightFloor(tr) {
+  if (ribbonApplies(tr)) return (2 * SHOULDER_CORNER + 1 + 2 * SHOULDER_MARGIN) * transitionMaxWall(tr);
+  return minShellLength(tr);
+}
+
+// Build the ribbon's outer + bore meridian polylines for one straight
+// transition segment. Returns { outer, inner } station lists, or null if
+// degenerate (caller falls back to the smooth shell).
+function shoulderRibbon(seg) {
+  const tr = seg.tr, L = seg.sEnd - seg.sStart;
+  if (L <= 1e-9) return null;
+  const A0 = transitionAt(tr, 0), B0 = transitionAt(tr, 1);
+  const wMax = transitionMaxWall(tr);
+  const mA = A0.inner + A0.wall / 2, mB = B0.inner + B0.wall / 2;
+  const dm = mB - mA;
+  if (Math.abs(dm) < 1e-9) return null;
+  const rho0 = SHOULDER_CORNER * wMax;
+  // Lean the middle leg only as much as the corners + end margins force: h is
+  // its axial extent; h = 0 is a vertical shoulder.
+  let h = 0;
+  for (let i = 0; i < 30; i++) {
+    const th0 = Math.atan2(Math.abs(dm), h);
+    h = Math.max(L - 2 * (rho0 * Math.tan(th0 / 2) + wMax / 2 + SHOULDER_MARGIN * wMax), 0);
+  }
+  const th = Math.atan2(Math.abs(dm), h);
+  const slant = Math.hypot(h, dm);
+  // Corners must fit on the middle leg, and stay at least half a wall so the
+  // inner-side offsets don't fold.
+  const rho = Math.max(Math.min(rho0, slant / (2 * Math.max(Math.tan(th / 2), 1e-9))), wMax / 2);
+  const T = rho * Math.tan(th / 2);
+  const d0 = [1, 0], d1 = [h / slant, dm / slant];
+  const P1 = [(L - h) / 2, mA], P2 = [(L + h) / 2, mB];
+  const perp2 = (v) => [-v[1], v[0]];
+  // Sample the centerline with tangents: flat — corner — leg — corner — flat.
+  const cpts = [];
+  const put = (x, y, tx, ty) => {
+    const last = cpts[cpts.length - 1];
+    if (last && Math.hypot(x - last[0], y - last[1]) < 1e-9) { last[2] = tx; last[3] = ty; return; }
+    cpts.push([x, y, tx, ty]);
+  };
+  const lineTo = (x0, y0, x1, y1, d) => {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    if (len < 1e-9) { put(x1, y1, d[0], d[1]); return; }
+    const n = Math.max(1, Math.ceil(len / Math.max(wMax / 2, 0.4)));
+    for (let i = 0; i <= n; i++) put(lerp(x0, x1, i / n), lerp(y0, y1, i / n), d[0], d[1]);
+  };
+  const cornerArc = (P, u, v) => {
+    const sg = Math.sign(u[0] * v[1] - u[1] * v[0]) || 1;
+    const Ta = [P[0] - u[0] * T, P[1] - u[1] * T];
+    const pu = perp2(u);
+    const C = [Ta[0] + pu[0] * sg * rho, Ta[1] + pu[1] * sg * rho];
+    const a0 = Math.atan2(Ta[1] - C[1], Ta[0] - C[0]);
+    const sweep = sg * Math.acos(clamp(u[0] * v[0] + u[1] * v[1], -1, 1));
+    const n = Math.max(4, Math.ceil(Math.abs(sweep) / (Math.PI / 24)));
+    for (let i = 0; i <= n; i++) {
+      const ang = a0 + sweep * (i / n);
+      const rx = Math.cos(ang), ry = Math.sin(ang);
+      put(C[0] + rho * rx, C[1] + rho * ry, -ry * sg, rx * sg);   // tangent = turn-sign · perp(radial)
+    }
+  };
+  lineTo(0, mA, P1[0] - T, mA, d0);
+  cornerArc(P1, d0, d1);
+  lineTo(P1[0] + d1[0] * T, P1[1] + d1[1] * T, P2[0] - d1[0] * T, P2[1] - d1[1] * T, d1);
+  cornerArc(P2, d1, d0);
+  lineTo(P2[0] + T, mB, L, mB, d0);
+  // Offset both surfaces by half the local wall; the thickness parameter is the
+  // fraction of ribbon path length, so the path middle = the shoulder middle.
+  const lens = [0];
+  for (let i = 1; i < cpts.length; i++) lens.push(lens[i - 1] + Math.hypot(cpts[i][0] - cpts[i - 1][0], cpts[i][1] - cpts[i - 1][1]));
+  const total = lens[lens.length - 1] || 1;
+  const outer = [], inner = [];
+  for (let i = 0; i < cpts.length; i++) {
+    const [x, y, tx, ty] = cpts[i];
+    const wh = transitionAt(tr, lens[i] / total).wall / 2;
+    const n = perp2([tx, ty]);
+    outer.push({ s: seg.sStart + x + n[0] * wh, r: y + n[1] * wh });
+    inner.push({ s: seg.sStart + x - n[0] * wh, r: y - n[1] * wh });
+  }
+  return { outer, inner };
+}
+
 // Inner radius + outer radius at arclength s: constant within a straight
-// section, blended across a bend's transition.
+// section, across a bend it's a square shoulder where the diameter changes
+// (a bore ledge + staggered outer step, full-thickness walls) and the plain
+// radial blend where it doesn't (an equal-Ø bend).
 function profileAt(s, path) {
   let seg = path.segments[path.segments.length - 1];
   for (const sg of path.segments) { if (s <= sg.sEnd) { seg = sg; break; } }
@@ -429,9 +547,16 @@ function profileAt(s, path) {
     const sec = path.sections[seg.si];
     return { inner: sec.id / 2, outer: sec.id / 2 + sec.w };
   }
+  // A Ø change on a STRAIGHT run is an even-thickness shell: the bore is offset
+  // perpendicular to the outer surface, so the wall is a constant-thickness band
+  // (steep when short, gentle when long). On a bend that same offset would need to
+  // differ on the concave vs convex side, which one bore radius can't do, so a
+  // bent reduction stays a plain radial cone (lengthened in makePath to stay thick).
   const len = seg.sEnd - seg.sStart;
   const t = len > 0 ? (s - seg.sStart) / len : 1;
   const { inner, wall } = transitionAt(seg.tr, t);
+  if (seg._dR === undefined) seg._dR = transitionDeltaOuter(seg.tr);
+  if (seg._dR > 1e-6 && seg.straight) return { inner: shellInnerRadius(seg, s), outer: inner + wall };
   return { inner, outer: inner + wall };
 }
 
@@ -790,7 +915,7 @@ export function build(raw, radialSegments) {
     if (b.bend && b.faceClamped) {
       notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
     } else if (b.lenFloored) {
-      notes.push('Bend ' + (i + 1) + ' lengthened to ~' + (round(b.arcLen, 1)) + ' mm so its inner wall stays ~' + (round(b.perpThk, 1)) + ' mm thick (of the ' + (round(b.wallLimit, 1)) + ' mm wall)');
+      notes.push('Bend ' + (i + 1) + ' reducer eased to ~' + (round(b.arcLen, 1)) + ' mm to keep full-thickness walls');
     }
   }
 
@@ -811,7 +936,11 @@ export function build(raw, radialSegments) {
       seg(sg.sStart, sg.sEnd, Math.max(4, Math.ceil(span / 2)));
     } else {
       const bd = bends[sg.bi], b = path.perBend[sg.bi];
-      seg(sg.sStart, sg.sEnd, b.bend ? Math.max(24, Math.ceil(Math.abs(bd.ang) / 1.5)) : Math.max(6, Math.ceil(bd.l2 / 2)));
+      const base = b.bend ? Math.max(24, Math.ceil(Math.abs(bd.ang) / 1.5)) : Math.max(6, Math.ceil(bd.l2 / 2));
+      // A Ø change is a square shoulder with steep steps — sample it finely so the
+      // ledge/step corners stay crisp instead of faceting across a coarse arc.
+      const dense = transitionDeltaOuter(sg.tr) > 1e-6 ? Math.min(400, Math.ceil(span / 0.2)) : 0;
+      seg(sg.sStart, sg.sEnd, Math.max(base, dense));
     }
   }
 
@@ -821,10 +950,27 @@ export function build(raw, radialSegments) {
   const iZoneB = innerFeatB[innerFeatB.length - 1].d;
   const sorted = [...new Set(samples)].sort((a, b) => a - b);
 
+  // Square-shoulder transitions are meridian POLYLINES (vertical in places, so
+  // not expressible as r(s) through profileAt); the assembly below splices each
+  // zone's polyline in place of its per-sample stations.
+  const shoulderZones = [];
+  for (const sg of path.segments) {
+    if (sg.kind !== 'bend' || !sg.straight) continue;
+    if (transitionDeltaOuter(sg.tr) <= 1e-6 || !ribbonApplies(sg.tr)) continue;
+    const rib = shoulderRibbon(sg);
+    if (rib) shoulderZones.push({ sStart: sg.sStart, sEnd: sg.sEnd, outer: rib.outer, inner: rib.inner });
+  }
+  const zoneAt = (s) => shoulderZones.find((z) => s >= z.sStart - 1e-9 && s <= z.sEnd + 1e-9);
+
   const inner = [];
+  const innerDone = new Set();
   for (const f of innerFeatA) inner.push({ s: f.d, r: f.r });
   for (const s of sorted) {
-    if (s > iZoneA + 1e-6 && s < T - iZoneB - 1e-6) inner.push({ s, r: profileAt(s, path).inner });
+    if (s > iZoneA + 1e-6 && s < T - iZoneB - 1e-6) {
+      const z = zoneAt(s);
+      if (z) { if (!innerDone.has(z)) { innerDone.add(z); for (const q of z.inner) inner.push(q); } continue; }
+      inner.push({ s, r: profileAt(s, path).inner });
+    }
   }
   for (let i = innerFeatB.length - 1; i >= 0; i--) inner.push({ s: T - innerFeatB[i].d, r: innerFeatB[i].r });
 
@@ -837,10 +983,15 @@ export function build(raw, radialSegments) {
 
   const assembleOuter = (trimA, trimB) => {
     const arr = [];
+    const done = new Set();
     if (trimA) arr.push({ s: first.end.Ft, r: Ofirst });
     else for (const f of featA) arr.push({ s: f.d, r: f.r });
     for (const s of sorted) {
-      if (s > zoneA + 1e-6 && s < T - zoneB - 1e-6) arr.push({ s, r: profileAt(s, path).outer });
+      if (s > zoneA + 1e-6 && s < T - zoneB - 1e-6) {
+        const z = zoneAt(s);
+        if (z) { if (!done.has(z)) { done.add(z); for (const q of z.outer) arr.push(q); } continue; }
+        arr.push({ s, r: profileAt(s, path).outer });
+      }
     }
     if (trimB) arr.push({ s: T - last.end.Ft, r: Olast });
     else for (let i = featB.length - 1; i >= 0; i--) arr.push({ s: T - featB[i].d, r: featB[i].r });

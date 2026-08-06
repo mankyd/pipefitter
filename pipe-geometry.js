@@ -207,14 +207,31 @@ function transitionOf(a, b, bend) {
   };
 }
 
+// Two-phase blend through a fixed middle value at t=0.5. Zero end slopes keep
+// the junctions tangent to the straight sections. The middle slope is the
+// harmonic mean of the two half-secants when the three values run in one
+// direction — a single monotone sweep through the middle value, no flat shelf
+// or momentary direction change — and drops to zero only when the middle is a
+// true extremum (a deliberate bulge or pinch), where the flat is the extremum.
+function blend3(vA, vM, vB, t) {
+  const s1 = vM - vA, s2 = vB - vM;                          // rise of each half
+  const m = s1 * s2 > 0 ? (2 * s1 * s2) / (s1 + s2) : 0;     // mid slope (per half)
+  if (t < 0.5) {
+    const u = t * 2, u2 = u * u, u3 = u2 * u;
+    return vA + s1 * (3 * u2 - 2 * u3) + m * (u3 - u2);
+  }
+  const u = t * 2 - 1, u2 = u * u, u3 = u2 * u;
+  return vM + s2 * (3 * u2 - 2 * u3) + m * (u3 - 2 * u2 + u);
+}
+
 // Inner radius + wall of a transition at blend parameter t (0..1).
 function transitionAt(tr, t) {
   const inner = tr.idmSmooth
     ? lerp(tr.idA, tr.idB, smooth(t))
-    : (t < 0.5 ? lerp(tr.idA, tr.idm, smooth(t * 2)) : lerp(tr.idm, tr.idB, smooth(t * 2 - 1)));
+    : blend3(tr.idA, tr.idm, tr.idB, t);
   const wall = tr.w2Smooth
     ? lerp(tr.wA, tr.wB, smooth(t))
-    : (t < 0.5 ? lerp(tr.wA, tr.w2, smooth(t * 2)) : lerp(tr.w2, tr.wB, smooth(t * 2 - 1)));
+    : blend3(tr.wA, tr.w2, tr.wB, t);
   return { inner, wall };
 }
 // Outer radius of the transition at t, on the same smooth profile profileAt uses.
@@ -383,49 +400,66 @@ function transitionMaxWall(tr) {
 // outer-radius change so the cone ramps gently enough to keep full-thickness walls.
 const BENT_CONE_LENGTH_MULT = 1.6;
 
-// Bore of a straight reducer as a CONSTANT-THICKNESS SHELL: the bore is the outer
-// surface offset inward PERPENDICULARLY by the wall, so the wall is an even-
-// thickness band the whole way — steep and near-vertical when the transition is
-// short, a gentle slope when it's long — never a chunky plate. A radial gap g
-// under an outer surface rising dOuter per unit t (advancing `len` axially per
-// unit t) projects to a perpendicular thickness g·len/√(dOuter²+len²); solving
-// for a perpendicular thickness of one wall gives g = wall·√(dOuter²+len²)/len.
-// dOuter=0 at both ends, so the bore meets the neighbour bores cleanly.
+// Bore of a straight reducer as a CONSTANT-THICKNESS SHELL: the bore dips below
+// the intended profile just enough that the wall, measured perpendicular to the
+// sloped surface, stays a full wall thick — an even band that is steep when the
+// transition is short and a gentle slope when it's long, never a chunky plate.
+// A radial gap g under a surface rising d per unit t (advancing `len` axially
+// per unit t) projects to a perpendicular thickness g·len/√(d²+len²), so the
+// bore drops by wall·(√(d²+len²)/len − 1). The slope d is the INTENDED BORE's
+// (transitionAt inner), not the outer surface's: only bore travel steepens the
+// wall band. A wall that bulges on its own (a defined w2 above the neighbours)
+// grows the OUTER surface — a solid rib whose material is already ≥ the wall —
+// and must not dig the fattening into the bore. d=0 at both ends, so the bore
+// meets the neighbour bores cleanly, and a flat bore stays exactly radial.
 function shellInnerRadius(seg, sQuery) {
   const tr = seg.tr, len = seg.sEnd - seg.sStart;
   if (len <= 1e-9) return transitionAt(tr, 1).inner;
   const t = clamp((sQuery - seg.sStart) / len, 0, 1);
   const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
-  const dO = (outerAtT(tr, tp) - outerAtT(tr, tm)) / (tp - tm);
-  const w = transitionAt(tr, t).wall;
-  return outerAtT(tr, t) - w * Math.hypot(dO, len) / len;
+  const dI = (transitionAt(tr, tp).inner - transitionAt(tr, tm).inner) / (tp - tm);
+  const { inner, wall } = transitionAt(tr, t);
+  return inner - wall * (Math.hypot(dI, len) / len - 1);
 }
 
-// Shortest straight reducer whose constant-thickness bore stays monotonic (doesn't
-// neck past the inlet). Below this the even-thickness wall would have to fold — the
-// point where a truly compact reducer would need a bore ledge instead. The bore
-// runs iA→iB, so "monotonic" means non-decreasing when iB>iA and non-increasing
-// otherwise. Capped at 6·Δouter; if the bore is non-monotonic even there (e.g. a
-// middle Ø that pinches below both ends), just use the cap.
-function minShellLength(tr) {
-  const iA = transitionAt(tr, 0).inner, iB = transitionAt(tr, 1).inner;
-  const inc = iB >= iA;
-  const cap = 6 * Math.max(transitionDeltaOuter(tr), transitionMaxWall(tr));
-  const monotonic = (len) => {
-    let prev = inc ? -Infinity : Infinity;
-    for (let i = 0; i <= 200; i++) {
-      const t = i / 200;
-      const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
-      const dO = (outerAtT(tr, tp) - outerAtT(tr, tm)) / (tp - tm);
-      const b = outerAtT(tr, t) - transitionAt(tr, t).wall * Math.hypot(dO, len) / len;
-      if (inc ? b < prev - 1e-6 : b > prev + 1e-6) return false;
-      prev = b;
+// Direction changes of a sampled profile, ignoring wiggles below eps. Small
+// steps accumulate (prev only advances on a decisive move) so a slow drift
+// still registers while numerical noise doesn't.
+function dirChanges(f, n, eps) {
+  let dir = 0, changes = 0, prev = f(0);
+  for (let i = 1; i <= n; i++) {
+    const v = f(i / n), d = v - prev;
+    if (Math.abs(d) > eps) {
+      const nd = d > 0 ? 1 : -1;
+      if (dir !== 0 && nd !== dir) changes++;
+      dir = nd;
+      prev = v;
     }
-    return true;
+  }
+  return changes;
+}
+
+// Shortest straight transition whose constant-thickness bore is still SHAPED like
+// the intended profile — no more direction changes than the profile itself asks
+// for. A plain reducer intends a monotone bore, so any dip is a fold artifact; a
+// fixed middle Ø that bulges above (or pinches below) both ends intends exactly
+// one reversal, and only extra wiggles beyond that mean the offset has folded.
+// Below this length the even-thickness wall can't follow the profile. Capped at
+// 6·Δouter as a backstop.
+function minShellLength(tr) {
+  const eps = 1e-3;
+  const ref = dirChanges((t) => transitionAt(tr, t).inner, 200, eps);
+  const cap = 6 * Math.max(transitionDeltaOuter(tr), transitionMaxWall(tr));
+  const bore = (len) => (t) => {
+    const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
+    const dI = (transitionAt(tr, tp).inner - transitionAt(tr, tm).inner) / (tp - tm);
+    const { inner, wall } = transitionAt(tr, t);
+    return inner - wall * (Math.hypot(dI, len) / len - 1);
   };
-  if (!monotonic(cap)) return cap;
+  const ok = (len) => dirChanges(bore(len), 200, eps) <= ref;
+  if (!ok(cap)) return cap;
   let lo = 1e-3, hi = cap;
-  for (let i = 0; i < 44; i++) { const m = (lo + hi) / 2; if (monotonic(m)) hi = m; else lo = m; }
+  for (let i = 0; i < 44; i++) { const m = (lo + hi) / 2; if (ok(m)) hi = m; else lo = m; }
   return hi * 1.05;
 }
 
@@ -442,6 +476,7 @@ function minShellLength(tr) {
 // through profileAt).
 const SHOULDER_CORNER = 0.75;   // corner radius, × the thickest wall
 const SHOULDER_MARGIN = 0.1;    // straight lead-in at each end, × the thickest wall
+const SHOULDER_EASE = 0.8;      // corner-radius growth per mm of l2 beyond the floor
 
 // The ribbon needs the radial travel to exceed the wall (otherwise there is no
 // room for the corners) and a continuous Ø (a fixed middle Ø must be honored by
@@ -471,19 +506,31 @@ function shoulderRibbon(seg) {
   const mA = A0.inner + A0.wall / 2, mB = B0.inner + B0.wall / 2;
   const dm = mB - mA;
   if (Math.abs(dm) < 1e-9) return null;
-  const rho0 = SHOULDER_CORNER * wMax;
+  // Corner radius: the vertical-shoulder minimum at the floor length, swelling
+  // with any slack (SHOULDER_EASE per mm of extra l2) so a longer transition
+  // rounds into ever softer sweeping arcs — approaching the smooth look of a
+  // bent reducer — instead of a straight slant with tight corners.
+  const Lmin = (2 * SHOULDER_CORNER + 1 + 2 * SHOULDER_MARGIN) * wMax;
+  const rho0 = SHOULDER_CORNER * wMax + SHOULDER_EASE * Math.max(L - Lmin, 0);
+  const axialRoom = L / 2 - wMax / 2 - SHOULDER_MARGIN * wMax;
+  // Effective corner radius at a given leg angle: capped so both corners fit on
+  // the middle leg and inside the axial span, and at least half a wall so the
+  // inner-side offsets don't fold.
+  const rhoAt = (th0, slant0) => {
+    const tanH = Math.max(Math.tan(th0 / 2), 1e-9);
+    return Math.max(Math.min(rho0, slant0 / (2 * tanH), axialRoom / tanH), wMax / 2);
+  };
   // Lean the middle leg only as much as the corners + end margins force: h is
   // its axial extent; h = 0 is a vertical shoulder.
   let h = 0;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 40; i++) {
     const th0 = Math.atan2(Math.abs(dm), h);
-    h = Math.max(L - 2 * (rho0 * Math.tan(th0 / 2) + wMax / 2 + SHOULDER_MARGIN * wMax), 0);
+    const r0 = rhoAt(th0, Math.hypot(h, dm));
+    h = Math.max(L - 2 * (r0 * Math.tan(th0 / 2) + wMax / 2 + SHOULDER_MARGIN * wMax), 0);
   }
   const th = Math.atan2(Math.abs(dm), h);
   const slant = Math.hypot(h, dm);
-  // Corners must fit on the middle leg, and stay at least half a wall so the
-  // inner-side offsets don't fold.
-  const rho = Math.max(Math.min(rho0, slant / (2 * Math.max(Math.tan(th / 2), 1e-9))), wMax / 2);
+  const rho = rhoAt(th, slant);
   const T = rho * Math.tan(th / 2);
   const d0 = [1, 0], d1 = [h / slant, dm / slant];
   const P1 = [(L - h) / 2, mA], P2 = [(L + h) / 2, mB];

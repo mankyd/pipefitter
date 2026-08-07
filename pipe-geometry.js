@@ -131,6 +131,70 @@ export function normalize(raw) {
     });
   }
 
+  // A fixed middle Ø or a defined thickness needs axial room to exist: the
+  // bulge (or pinch) it asks for beyond the pass-through blend of its two
+  // neighbours can't exceed the bend's effective length — the arc for an angled
+  // bend, l2 for a straight one. At zero length they collapse to the blend
+  // (mid values between the neighbours remain legal; they're what the
+  // transition passes through anyway).
+  for (let i = 0; i < bends.length; i++) {
+    const bd = bends[i], a = sections[i], b = sections[i + 1];
+    if (bd.idmSmooth && bd.w2Smooth) continue;
+    const A = Math.abs(bd.ang * Math.PI / 180);
+    const eff = A > 1e-6
+      ? solveBendRadius(transitionOf(a, b, bd), A, bd.l2).R * A
+      : bd.l2;
+    if (!bd.idmSmooth) {
+      const lo = Math.min(a.id, b.id) - eff, hi = Math.max(a.id, b.id) + eff;
+      if (bd.idm < lo - 1e-9 || bd.idm > hi + 1e-9) {
+        bd.idm = round(clamp(bd.idm, lo, hi), 2);
+        notes.push('Bend ' + (i + 1) + ' middle Ø limited to ' + bd.idm + ' mm — a bulge or pinch needs bend length');
+      }
+    }
+    if (!bd.w2Smooth) {
+      const lo = Math.max(BEND_LIMITS.w2[0], Math.min(a.w, b.w) - eff);
+      const hi = Math.max(a.w, b.w) + eff;
+      if (bd.w2 < lo - 1e-9 || bd.w2 > hi + 1e-9) {
+        bd.w2 = round(clamp(bd.w2, lo, hi), 2);
+        notes.push('Bend ' + (i + 1) + ' thickness limited to ' + bd.w2 + ' mm — a thicker middle needs bend length');
+      }
+    }
+    // The IMPLIED outer surface obeys the same rule: even an in-range middle Ø
+    // can push inner+wall into a bulge (or dip) beyond both ends — e.g. a
+    // middle Ø equal to the larger bore opens the bore early while the blended
+    // wall is still thick. Pull the fixed value toward its pass-through anchor
+    // until the outer profile fits the room the length affords.
+    {
+      const oA2 = a.id / 2 + a.w, oB2 = b.id / 2 + b.w;
+      const oLo = Math.min(oA2, oB2) - eff / 2, oHi = Math.max(oA2, oB2) + eff / 2;
+      const excess = () => {
+        const t2 = transitionOf(a, b, bd);
+        let ex = 0;
+        for (let k = 0; k <= 40; k++) {
+          const q = transitionAt(t2, k / 40);
+          ex = Math.max(ex, q.inner + q.wall - oHi, oLo - (q.inner + q.wall));
+        }
+        return ex;
+      };
+      const fitOuter = (key, safe, label) => {
+        if (excess() <= 1e-6) return;
+        const orig = bd[key];
+        let lo2 = 0, hi2 = 1;                    // 0 → safe anchor, 1 → requested value
+        for (let k = 0; k < 24; k++) {
+          const m = (lo2 + hi2) / 2;
+          bd[key] = safe + (orig - safe) * m;
+          if (excess() > 1e-6) hi2 = m; else lo2 = m;
+        }
+        bd[key] = round(safe + (orig - safe) * lo2, 2);
+        if (Math.abs(bd[key] - orig) > 0.005) {
+          notes.push('Bend ' + (i + 1) + label + bd[key] + ' mm — the outer wall needs bend length to bulge');
+        }
+      };
+      if (!bd.idmSmooth) fitOuter('idm', (a.id + b.id) / 2, ' middle Ø limited to ');
+      if (!bd.w2Smooth) fitOuter('w2', Math.min(a.w, b.w), ' thickness limited to ');
+    }
+  }
+
   fitEnd(sections[0], 0, notes);
   fitEnd(sections[n - 1], n - 1, notes);
   return { p: { sections, bends }, notes };
@@ -186,15 +250,15 @@ function fitEnd(sec, index, notes) {
   } else if (e.type === 'fit') {
     // The stub is carved from the section's length, so it must leave a body.
     const maxL = Math.max(0, secLen - 1);
-    if (e.FitL > maxL) { e.FitL = round(maxL, 2); notes.push(label + ' fit length limited to ' + e.FitL + ' mm by section length'); }
+    if (e.FitL > maxL) { e.FitL = round(maxL, 2); notes.push(label + ' slip joint length limited to ' + e.FitL + ' mm by section length'); }
     // A spigot's tolerance can't exceed the bore (it would invert the wall).
     if (e.FitSide === 'inside') {
       const maxTol = Math.max(0, sec.id - 2 * wall - 0.5);
-      if (e.FitTol > maxTol) { e.FitTol = round(maxTol, 2); notes.push(label + ' fit tolerance limited to ' + e.FitTol + ' mm by wall'); }
+      if (e.FitTol > maxTol) { e.FitTol = round(maxTol, 2); notes.push(label + ' slip joint tolerance limited to ' + e.FitTol + ' mm by wall'); }
     }
     // The lead-in chamfer can't exceed the wall (radial) or the stub (axial).
-    if (e.FitChY > wall) { e.FitChY = round(wall, 2); notes.push(label + ' fit chamfer reduced to ' + e.FitChY + ' mm by wall thickness'); }
-    if (e.FitChX > e.FitL) { e.FitChX = round(e.FitL, 2); notes.push(label + ' fit chamfer depth limited to ' + e.FitChX + ' mm by fit length'); }
+    if (e.FitChY > wall) { e.FitChY = round(wall, 2); notes.push(label + ' slip joint chamfer reduced to ' + e.FitChY + ' mm by wall thickness'); }
+    if (e.FitChX > e.FitL) { e.FitChX = round(e.FitL, 2); notes.push(label + ' slip joint chamfer depth limited to ' + e.FitChX + ' mm by joint length'); }
   }
 }
 
@@ -270,25 +334,12 @@ function makePath(p) {
       // B is the arc length along the OUTER surface on the inner side of the
       // bend; solve the centerline radius that produces exactly that length.
       const sol = bent ? solveBendRadius(tr, Math.abs(A), bd.l2) : { R: 0, clamped: false };
-      let R = sol.R;
-      let arcLen = bent ? R * Math.abs(A) : bd.l2;
-      let faceClamped = sol.clamped;
-      // Floor a Ø change's length. A STRAIGHT reduction is an even-thickness wall:
-      // a large Ø change becomes a square shoulder (shoulderRibbon) floored at its
-      // vertical footprint (~2.7× wall, regardless of Ø change); a small one stays
-      // a smooth shell floored where its bore would neck. A larger l2 just leans
-      // the shoulder into a gentler slope. A BENT reduction is a smooth cone; too
-      // short an arc thins its wall, so floor at a multiple of the Ø change Δr.
-      let lenFloored = false;
-      const dR = transitionDeltaOuter(tr);
-      if (dR > 1e-6) {
-        const minLen = bent ? BENT_CONE_LENGTH_MULT * dR : straightFloor(tr);
-        if (arcLen < minLen) {
-          arcLen = minLen;
-          if (bent) { R = arcLen / Math.abs(A); faceClamped = false; }
-          lenFloored = true;
-        }
-      }
+      const R = sol.R;
+      const arcLen = bent ? R * Math.abs(A) : bd.l2;
+      const faceClamped = sol.clamped;
+      // No length floor: the wall is built as a disc envelope (envelopeChains),
+      // which keeps its thickness at any transition length — even zero, where it
+      // collapses to a rounded square shoulder at the junction.
       const minFace = bent ? innerFaceLength(tr, Math.abs(A), minBendRadius(tr)) : 0;
       const sStart = s, sEnd = s + arcLen;
       let center = null;
@@ -306,8 +357,7 @@ function makePath(p) {
         segments.push({ kind: 'bend', bi: i, straight: true, sStart, sEnd, tr, P0: [P[0], P[1], P[2]], dir: dir2, T: [dir2[0], dir2[1], 0] });
         P = [P[0] + arcLen * dir2[0], P[1] + arcLen * dir2[1], 0];
       }
-      const wallLimit = transitionMinWall(tr);
-      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, lenFloored, wallLimit, sStart, sEnd });
+      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, sStart, sEnd });
       s = sEnd;
     }
   }
@@ -369,12 +419,6 @@ function transitionMinWall(tr) {
   for (let i = 0; i <= 40; i++) mn = Math.min(mn, transitionAt(tr, i / 40).wall);
   return mn;
 }
-function transitionDeltaOuter(tr) {
-  let mn = Infinity, mx = -Infinity;
-  for (let i = 0; i <= 40; i++) { const o = outerAtT(tr, i / 40); mn = Math.min(mn, o); mx = Math.max(mx, o); }
-  return mx - mn;
-}
-
 
 // Solve R so the inner face arc equals the requested length. Monotonic in R.
 function solveBendRadius(tr, A, target) {
@@ -396,197 +440,239 @@ function transitionMaxWall(tr) {
   return mx;
 }
 
-// A bent reduction is a smooth cone; floor its arc length at this multiple of the
-// outer-radius change so the cone ramps gently enough to keep full-thickness walls.
-const BENT_CONE_LENGTH_MULT = 1.6;
+// ── Disc-envelope wall construction ──────────────────────────────────────────
+// A transition's wall is built the way a draftsman would ink it: run a guide
+// curve along the wall's CENTERLINE (top of the pipe and bottom of the pipe
+// separately, in the bend plane), string a series of circles along it — each
+// with a diameter of the wall thickness called for at that point — and wrap the
+// envelope of those circles with tangent runs from circle to circle. The two
+// envelope chains ARE the outer surface and the bore, so the wall is a full
+// circle-diameter thick everywhere by construction — at any transition length
+// (even zero, where it collapses to a rounded shoulder) and around any bend.
+// Where a tight bend bunches the circles until they overlap (the concave side),
+// tangent points that land inside a neighbouring circle are trimmed away: the
+// wall there comes out thicker than specified, never thinner. The matched
+// top/bottom chains are then paired into cross-section rings (center = midpoint,
+// radius = half the gap) and revolved; ring centers may drift slightly off the
+// nominal centerline through a bend, which is exactly what keeps the in-plane
+// walls true.
+const ENV_STEP_WALLS = 0.25;      // guide sampling step, × the local min wall
+const ENV_MAX_SAMPLES = 600;      // circles per guide curve
+const ENV_STATION_STEP = 0.3;     // ring spacing along the chains, mm
+const ENV_ROUND = 0.75;           // guide corner rounding, × the local wall
 
-// Bore of a straight reducer as a CONSTANT-THICKNESS SHELL: the bore dips below
-// the intended profile just enough that the wall, measured perpendicular to the
-// sloped surface, stays a full wall thick — an even band that is steep when the
-// transition is short and a gentle slope when it's long, never a chunky plate.
-// A radial gap g under a surface rising d per unit t (advancing `len` axially
-// per unit t) projects to a perpendicular thickness g·len/√(d²+len²), so the
-// bore drops by wall·(√(d²+len²)/len − 1). The slope d is the INTENDED BORE's
-// (transitionAt inner), not the outer surface's: only bore travel steepens the
-// wall band. A wall that bulges on its own (a defined w2 above the neighbours)
-// grows the OUTER surface — a solid rib whose material is already ≥ the wall —
-// and must not dig the fattening into the bore. d=0 at both ends, so the bore
-// meets the neighbour bores cleanly, and a flat bore stays exactly radial.
-function shellInnerRadius(seg, sQuery) {
+// Does the transition change shape at all? A constant bore + constant wall
+// needs no envelope — the plain radial profile is already exact.
+function transitionVaries(tr) {
+  let iMin = Infinity, iMax = -Infinity, wLo = Infinity, wHi = -Infinity;
+  for (let i = 0; i <= 40; i++) {
+    const { inner, wall } = transitionAt(tr, i / 40);
+    iMin = Math.min(iMin, inner); iMax = Math.max(iMax, inner);
+    wLo = Math.min(wLo, wall); wHi = Math.max(wHi, wall);
+  }
+  return (iMax - iMin) > 1e-6 || (wHi - wLo) > 1e-6;
+}
+
+// Build the four envelope chains for one transition segment and pair them into
+// ring stations. Returns { outer, inner } station lists; a station is
+// { s, r, C:[x,y], v:[x,y] } — a cross-section ring centered at C (bend plane),
+// radius r, meeting its top/bottom envelope points at C ± r·v. leadA/leadB
+// extend the guide a short way into the neighbouring straight sections (where
+// the envelope IS the neighbour's cylinder), so the chains always start and end
+// flush with the sections — a zero-length transition's end circles poke half a
+// wall past the junction, and without the leads the chains would start there,
+// axially offset from the section rings, folding the mesh back on itself.
+function envelopeChains(seg, path, leadA, leadB) {
   const tr = seg.tr, len = seg.sEnd - seg.sStart;
-  if (len <= 1e-9) return transitionAt(tr, 1).inner;
-  const t = clamp((sQuery - seg.sStart) / len, 0, 1);
-  const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
-  const dI = (transitionAt(tr, tp).inner - transitionAt(tr, tm).inner) / (tp - tm);
-  const { inner, wall } = transitionAt(tr, t);
-  return inner - wall * (Math.hypot(dI, len) / len - 1);
-}
-
-// Direction changes of a sampled profile, ignoring wiggles below eps. Small
-// steps accumulate (prev only advances on a decisive move) so a slow drift
-// still registers while numerical noise doesn't.
-function dirChanges(f, n, eps) {
-  let dir = 0, changes = 0, prev = f(0);
-  for (let i = 1; i <= n; i++) {
-    const v = f(i / n), d = v - prev;
-    if (Math.abs(d) > eps) {
-      const nd = d > 0 ? 1 : -1;
-      if (dir !== 0 && nd !== dir) changes++;
-      dir = nd;
-      prev = v;
-    }
-  }
-  return changes;
-}
-
-// Shortest straight transition whose constant-thickness bore is still SHAPED like
-// the intended profile — no more direction changes than the profile itself asks
-// for. A plain reducer intends a monotone bore, so any dip is a fold artifact; a
-// fixed middle Ø that bulges above (or pinches below) both ends intends exactly
-// one reversal, and only extra wiggles beyond that mean the offset has folded.
-// Below this length the even-thickness wall can't follow the profile. Capped at
-// 6·Δouter as a backstop.
-function minShellLength(tr) {
-  const eps = 1e-3;
-  const ref = dirChanges((t) => transitionAt(tr, t).inner, 200, eps);
-  const cap = 6 * Math.max(transitionDeltaOuter(tr), transitionMaxWall(tr));
-  const bore = (len) => (t) => {
-    const dt = 1e-4, tp = Math.min(1, t + dt), tm = Math.max(0, t - dt);
-    const dI = (transitionAt(tr, tp).inner - transitionAt(tr, tm).inner) / (tp - tm);
-    const { inner, wall } = transitionAt(tr, t);
-    return inner - wall * (Math.hypot(dI, len) / len - 1);
+  const wMin = Math.max(transitionMinWall(tr), 0.1);
+  const mAt = (t) => { const q = transitionAt(tr, t); return q.inner + q.wall / 2; };
+  const travel = Math.abs(mAt(1) - mAt(0));
+  const span = leadA + len + leadB;
+  const n = clamp(Math.ceil((span + travel + 1) / (wMin * ENV_STEP_WALLS)), 48, ENV_MAX_SAMPLES);
+  // Guide parameter u∈[0,1] covers lead-in, transition, lead-out by "virtual
+  // length" — the transition's share includes its radial travel so a zero-length
+  // shoulder still gets its samples.
+  const vLen = Math.max(len + travel, 1e-6), vTotal = leadA + vLen + leadB;
+  const paramAt = (u) => {
+    const d = u * vTotal;
+    if (d <= leadA) return { s: seg.sStart - (leadA - d), t: 0 };
+    if (d >= leadA + vLen) return { s: seg.sEnd + (d - leadA - vLen), t: 1 };
+    const t = (d - leadA) / vLen;
+    return { s: seg.sStart + t * len, t };
   };
-  const ok = (len) => dirChanges(bore(len), 200, eps) <= ref;
-  if (!ok(cap)) return cap;
-  let lo = 1e-3, hi = cap;
-  for (let i = 0; i < 44; i++) { const m = (lo + hi) / 2; if (ok(m)) hi = m; else lo = m; }
-  return hi * 1.05;
-}
 
-// ── Square-shoulder reducer ──────────────────────────────────────────────────
-// A straight transition with a large Ø change is drawn as an even-thickness
-// RIBBON: the wall's centerline runs axially, turns (up to 90°) toward radial,
-// crosses the Ø change, and turns back, with rounded corners. Both surfaces are
-// the ±wall/2 offsets of that one path, so the wall is even everywhere — the
-// thickness follows transitionAt (Continuous thickness blends neighbor walls; a
-// defined w2 lands at the shoulder's middle). Short l2 → near-vertical shoulder;
-// larger l2 leans the middle leg into an ever gentler slope, one continuous
-// family. The outer/bore meridians are emitted as polylines (they are vertical
-// in places, so they are spliced into the station list rather than sampled
-// through profileAt).
-const SHOULDER_CORNER = 0.75;   // corner radius, × the thickest wall
-const SHOULDER_MARGIN = 0.1;    // straight lead-in at each end, × the thickest wall
-const SHOULDER_EASE = 0.8;      // corner-radius growth per mm of l2 beyond the floor
-
-// The ribbon needs the radial travel to exceed the wall (otherwise there is no
-// room for the corners) and a continuous Ø (a fixed middle Ø must be honored by
-// the smooth profile instead).
-function ribbonApplies(tr) {
-  if (!tr.idmSmooth) return false;
-  const A0 = transitionAt(tr, 0), B0 = transitionAt(tr, 1);
-  const dm = Math.abs((B0.inner + B0.wall / 2) - (A0.inner + A0.wall / 2));
-  return dm >= 1.05 * transitionMaxWall(tr);
-}
-
-// Minimum length of a straight transition: the vertical-shoulder footprint when
-// the ribbon applies, else the even-shell fold limit.
-function straightFloor(tr) {
-  if (ribbonApplies(tr)) return (2 * SHOULDER_CORNER + 1 + 2 * SHOULDER_MARGIN) * transitionMaxWall(tr);
-  return minShellLength(tr);
-}
-
-// Build the ribbon's outer + bore meridian polylines for one straight
-// transition segment. Returns { outer, inner } station lists, or null if
-// degenerate (caller falls back to the smooth shell).
-function shoulderRibbon(seg) {
-  const tr = seg.tr, L = seg.sEnd - seg.sStart;
-  if (L <= 1e-9) return null;
-  const A0 = transitionAt(tr, 0), B0 = transitionAt(tr, 1);
-  const wMax = transitionMaxWall(tr);
-  const mA = A0.inner + A0.wall / 2, mB = B0.inner + B0.wall / 2;
-  const dm = mB - mA;
-  if (Math.abs(dm) < 1e-9) return null;
-  // Corner radius: the vertical-shoulder minimum at the floor length, swelling
-  // with any slack (SHOULDER_EASE per mm of extra l2) so a longer transition
-  // rounds into ever softer sweeping arcs — approaching the smooth look of a
-  // bent reducer — instead of a straight slant with tight corners.
-  const Lmin = (2 * SHOULDER_CORNER + 1 + 2 * SHOULDER_MARGIN) * wMax;
-  const rho0 = SHOULDER_CORNER * wMax + SHOULDER_EASE * Math.max(L - Lmin, 0);
-  const axialRoom = L / 2 - wMax / 2 - SHOULDER_MARGIN * wMax;
-  // Effective corner radius at a given leg angle: capped so both corners fit on
-  // the middle leg and inside the axial span, and at least half a wall so the
-  // inner-side offsets don't fold.
-  const rhoAt = (th0, slant0) => {
-    const tanH = Math.max(Math.tan(th0 / 2), 1e-9);
-    return Math.max(Math.min(rho0, slant0 / (2 * tanH), axialRoom / tanH), wMax / 2);
-  };
-  // Lean the middle leg only as much as the corners + end margins force: h is
-  // its axial extent; h = 0 is a vertical shoulder.
-  let h = 0;
-  for (let i = 0; i < 40; i++) {
-    const th0 = Math.atan2(Math.abs(dm), h);
-    const r0 = rhoAt(th0, Math.hypot(h, dm));
-    h = Math.max(L - 2 * (r0 * Math.tan(th0 / 2) + wMax / 2 + SHOULDER_MARGIN * wMax), 0);
-  }
-  const th = Math.atan2(Math.abs(dm), h);
-  const slant = Math.hypot(h, dm);
-  const rho = rhoAt(th, slant);
-  const T = rho * Math.tan(th / 2);
-  const d0 = [1, 0], d1 = [h / slant, dm / slant];
-  const P1 = [(L - h) / 2, mA], P2 = [(L + h) / 2, mB];
-  const perp2 = (v) => [-v[1], v[0]];
-  // Sample the centerline with tangents: flat — corner — leg — corner — flat.
-  const cpts = [];
-  const put = (x, y, tx, ty) => {
-    const last = cpts[cpts.length - 1];
-    if (last && Math.hypot(x - last[0], y - last[1]) < 1e-9) { last[2] = tx; last[3] = ty; return; }
-    cpts.push([x, y, tx, ty]);
-  };
-  const lineTo = (x0, y0, x1, y1, d) => {
-    const len = Math.hypot(x1 - x0, y1 - y0);
-    if (len < 1e-9) { put(x1, y1, d[0], d[1]); return; }
-    const n = Math.max(1, Math.ceil(len / Math.max(wMax / 2, 0.4)));
-    for (let i = 0; i <= n; i++) put(lerp(x0, x1, i / n), lerp(y0, y1, i / n), d[0], d[1]);
-  };
-  const cornerArc = (P, u, v) => {
-    const sg = Math.sign(u[0] * v[1] - u[1] * v[0]) || 1;
-    const Ta = [P[0] - u[0] * T, P[1] - u[1] * T];
-    const pu = perp2(u);
-    const C = [Ta[0] + pu[0] * sg * rho, Ta[1] + pu[1] * sg * rho];
-    const a0 = Math.atan2(Ta[1] - C[1], Ta[0] - C[0]);
-    const sweep = sg * Math.acos(clamp(u[0] * v[0] + u[1] * v[1], -1, 1));
-    const n = Math.max(4, Math.ceil(Math.abs(sweep) / (Math.PI / 24)));
+  const side = (sideSign) => {
+    // the guide circles: centers on this side's midwall trace, radius = wall/2
+    const cs = [], Rs = [], Ps = [];
     for (let i = 0; i <= n; i++) {
-      const ang = a0 + sweep * (i / n);
-      const rx = Math.cos(ang), ry = Math.sin(ang);
-      put(C[0] + rho * rx, C[1] + rho * ry, -ry * sg, rx * sg);   // tangent = turn-sign · perp(radial)
+      const { s, t } = paramAt(i / n);
+      const { P, T } = path.at(s);
+      const v = [T[1], -T[0]];
+      const { inner, wall } = transitionAt(tr, t);
+      const m = inner + wall / 2;
+      cs.push([P[0] + sideSign * m * v[0], P[1] + sideSign * m * v[1]]);
+      Rs.push(wall / 2);
+      Ps.push(P);
     }
+    // Round the guide before wrapping it: box-average the circle centers (and
+    // radii) over ± ENV_ROUND × the local wall of guide arc. A zero-length
+    // shoulder's hard axial→radial turns become wall-scale fillets — the
+    // envelope of circles only rounds a corner's convex side, so the guide
+    // itself must carry the rounding for the inside corners. Straight and
+    // already-smooth stretches are untouched (averaging collinear samples is a
+    // no-op), and the window tapers to zero at the chain ends so the junctions
+    // with the straight sections stay exact.
+    const acc = [0];
+    for (let i = 1; i <= n; i++) acc.push(acc[i - 1] + Math.hypot(cs[i][0] - cs[i - 1][0], cs[i][1] - cs[i - 1][1]));
+    const totalArc = acc[n];
+    if (totalArc > 1e-9) {
+      // Window widths: wall-scaled, tapering to zero at the ends — and
+      // Lipschitz-limited so the width never changes faster than half the arc
+      // it spans. Where the wall collapses abruptly (a thick tube meeting a
+      // thin one) an unrestrained width jump lets neighbouring averages
+      // leapfrog, folding the smoothed guide back on itself — which flips the
+      // tangent and swaps the bore onto the outer side.
+      const hs = [];
+      for (let i = 0; i <= n; i++) hs.push(Math.min(ENV_ROUND * 2 * Rs[i], acc[i], totalArc - acc[i]));
+      for (let i = 1; i <= n; i++) hs[i] = Math.min(hs[i], hs[i - 1] + 0.5 * (acc[i] - acc[i - 1]));
+      for (let i = n - 1; i >= 0; i--) hs[i] = Math.min(hs[i], hs[i + 1] + 0.5 * (acc[i + 1] - acc[i]));
+      const smC = [], smR = [];
+      for (let i = 0; i <= n; i++) {
+        const h = hs[i];
+        if (h < 1e-9) { smC.push(cs[i]); smR.push(Rs[i]); continue; }
+        let sx = 0, sy = 0, sr = 0, cnt = 0;
+        for (let j = i; j >= 0 && acc[i] - acc[j] <= h; j--) { sx += cs[j][0]; sy += cs[j][1]; sr += Rs[j]; cnt++; }
+        for (let j = i + 1; j <= n && acc[j] - acc[i] <= h; j++) { sx += cs[j][0]; sy += cs[j][1]; sr += Rs[j]; cnt++; }
+        smC.push([sx / cnt, sy / cnt]);
+        smR.push(sr / cnt);
+      }
+      for (let i = 0; i <= n; i++) { cs[i] = smC[i]; Rs[i] = smR[i]; }
+    }
+    // Tangent-run touch points. When the circle size is changing, the tangent
+    // line tilts: the touch point sits at the normal rotated by β, where
+    // sin β = dR per unit of guide arc — the exact circle-to-circle tangent
+    // rather than the perpendicular-above-center approximation.
+    // Orientation: ONE fixed rotation of the tangent for the whole traversal,
+    // chosen where "away from the centerline" is unambiguous (the guide runs
+    // along the path there). A per-point test degenerates on radial stretches —
+    // a vertical shoulder's normal is axial, perpendicular to the radial
+    // reference — and flips on numerical noise.
+    let rotSign = 0;
+    for (let i = 0; i <= n && rotSign === 0; i++) {
+      const ip = Math.min(n, i + 1), im = Math.max(0, i - 1);
+      const tx = cs[ip][0] - cs[im][0], ty = cs[ip][1] - cs[im][1];
+      const dl = Math.hypot(tx, ty);
+      if (dl < 1e-12) continue;
+      const d = (-ty * (cs[i][0] - Ps[i][0]) + tx * (cs[i][1] - Ps[i][1])) / dl;
+      if (Math.abs(d) > 0.05) rotSign = d > 0 ? 1 : -1;
+    }
+    if (rotSign === 0) rotSign = 1;
+    // Resample the smoothed guide to uniform arc spacing before taking
+    // tangents: a wide averaging window can pile samples nearly on top of one
+    // another around a corner, and the finite-difference tangents there turn
+    // to noise the envelope inherits as hooks through the wall.
+    {
+      const a2 = [0];
+      for (let i = 1; i <= n; i++) a2.push(a2[i - 1] + Math.hypot(cs[i][0] - cs[i - 1][0], cs[i][1] - cs[i - 1][1]));
+      const t2 = a2[n];
+      if (t2 > 1e-9) {
+        const cu = [], ru = [];
+        let j = 0;
+        for (let i = 0; i <= n; i++) {
+          const d = (i / n) * t2;
+          while (j < n - 1 && a2[j + 1] < d) j++;
+          const f = (d - a2[j]) / ((a2[j + 1] - a2[j]) || 1e-12);
+          cu.push([lerp(cs[j][0], cs[j + 1][0], f), lerp(cs[j][1], cs[j + 1][1], f)]);
+          ru.push(lerp(Rs[j], Rs[j + 1], f));
+        }
+        for (let i = 0; i <= n; i++) { cs[i] = cu[i]; Rs[i] = ru[i]; }
+      }
+    }
+    const outer = [], bore = [];
+    let ptx = 1, pty = 0;
+    for (let i = 0; i <= n; i++) {
+      const ip = Math.min(n, i + 1), im = Math.max(0, i - 1);
+      let tx = cs[ip][0] - cs[im][0], ty = cs[ip][1] - cs[im][1];
+      const dl = Math.hypot(tx, ty);
+      if (dl > 1e-12) { tx /= dl; ty /= dl; ptx = tx; pty = ty; } else { tx = ptx; ty = pty; }
+      // A circle whose radius changes almost as fast as its center moves is
+      // (nearly) swallowed by its neighbour: it has no tangent point of its own
+      // on the union boundary, and forcing one (a hard-clamped tilt) throws a
+      // hook outside the band. Emit nothing there — the neighbours' points
+      // bridge across. Endpoints always emit (they anchor the section joins).
+      const dRad = Rs[ip] - Rs[im];
+      if (i > 0 && i < n && dl > 1e-12 && Math.abs(dRad) >= 0.9 * dl) continue;
+      const sinB = dl > 1e-12 ? clamp(dRad / dl, -0.9, 0.9) : 0;
+      const cosB = Math.sqrt(1 - sinB * sinB);
+      const nx = rotSign * -ty, ny = rotSign * tx;
+      const bx = -Rs[i] * sinB * tx, by = -Rs[i] * sinB * ty;
+      outer.push([cs[i][0] + Rs[i] * cosB * nx + bx, cs[i][1] + Rs[i] * cosB * ny + by]);
+      bore.push([cs[i][0] - Rs[i] * cosB * nx + bx, cs[i][1] - Rs[i] * cosB * ny + by]);
+    }
+    // Trim: a touch point swallowed by any other circle is not on the envelope
+    // of the union — dropping it (and chording across, at sub-sample scale) is
+    // what keeps a tight bend's wall from crossing itself. Endpoints stay.
+    // The eps shrink below keeps a point's own circle from swallowing it (its
+    // tangency distance is exactly R), so every point tests against every
+    // circle — no index pairing needed, which also lets the emit loop skip
+    // swallowed samples freely. First/last points anchor the section joins.
+    const trim = (pts) => {
+      const kept = [];
+      for (let k = 0; k < pts.length; k++) {
+        if (k > 0 && k < pts.length - 1) {
+          let inside = false;
+          for (let j = 0; j <= n && !inside; j++) {
+            const rj = Rs[j] - Math.max(1e-4, 0.002 * Rs[j]);
+            if (rj <= 0) continue;
+            const dx = pts[k][0] - cs[j][0], dy = pts[k][1] - cs[j][1];
+            if (dx * dx + dy * dy < rj * rj) inside = true;
+          }
+          if (inside) continue;
+        }
+        kept.push(pts[k]);
+      }
+      return kept;
+    };
+    return { outer: trim(outer), bore: trim(bore) };
   };
-  lineTo(0, mA, P1[0] - T, mA, d0);
-  cornerArc(P1, d0, d1);
-  lineTo(P1[0] + d1[0] * T, P1[1] + d1[1] * T, P2[0] - d1[0] * T, P2[1] - d1[1] * T, d1);
-  cornerArc(P2, d1, d0);
-  lineTo(P2[0] + T, mB, L, mB, d0);
-  // Offset both surfaces by half the local wall; the thickness parameter is the
-  // fraction of ribbon path length, so the path middle = the shoulder middle.
-  const lens = [0];
-  for (let i = 1; i < cpts.length; i++) lens.push(lens[i - 1] + Math.hypot(cpts[i][0] - cpts[i - 1][0], cpts[i][1] - cpts[i - 1][1]));
-  const total = lens[lens.length - 1] || 1;
-  const outer = [], inner = [];
-  for (let i = 0; i < cpts.length; i++) {
-    const [x, y, tx, ty] = cpts[i];
-    const wh = transitionAt(tr, lens[i] / total).wall / 2;
-    const n = perp2([tx, ty]);
-    outer.push({ s: seg.sStart + x + n[0] * wh, r: y + n[1] * wh });
-    inner.push({ s: seg.sStart + x - n[0] * wh, r: y - n[1] * wh });
-  }
-  return { outer, inner };
+
+  const top = side(1), bot = side(-1);
+  const resample = (pts, k) => {
+    const acc = [0];
+    for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const total = acc[acc.length - 1];
+    if (total < 1e-12) return new Array(k).fill(pts[0]);
+    const out = [];
+    let j = 0;
+    for (let i = 0; i < k; i++) {
+      const d = (i / (k - 1)) * total;
+      while (j < pts.length - 2 && acc[j + 1] < d) j++;
+      const f = (d - acc[j]) / ((acc[j + 1] - acc[j]) || 1e-12);
+      out.push([lerp(pts[j][0], pts[j + 1][0], f), lerp(pts[j][1], pts[j + 1][1], f)]);
+    }
+    return out;
+  };
+  const chainLen = (pts) => { let L = 0; for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return L; };
+  const NS = clamp(Math.ceil(Math.max(chainLen(top.outer), chainLen(bot.outer)) / ENV_STATION_STEP) + 1, 24, 400);
+  const pair = (a, b) => {
+    const A2 = resample(a, NS), B2 = resample(b, NS), st = [];
+    for (let i = 0; i < NS; i++) {
+      const C = [(A2[i][0] + B2[i][0]) / 2, (A2[i][1] + B2[i][1]) / 2];
+      const vx = A2[i][0] - C[0], vy = A2[i][1] - C[1];
+      const r = Math.hypot(vx, vy);
+      const v = r > 1e-12 ? [vx / r, vy / r] : [0, 1];
+      st.push({ s: seg.sStart - leadA + (i / (NS - 1)) * span, r: Math.max(r, 1e-4), C, v });
+    }
+    return st;
+  };
+  return { outer: pair(top.outer, bot.outer), inner: pair(top.bore, bot.bore) };
 }
+
 
 // Inner radius + outer radius at arclength s: constant within a straight
-// section, across a bend it's a square shoulder where the diameter changes
-// (a bore ledge + staggered outer step, full-thickness walls) and the plain
-// radial blend where it doesn't (an equal-Ø bend).
+// section, the nominal radial blend across a bend. Transitions whose shape
+// varies are meshed from envelopeChains stations instead of this profile —
+// this stays as the reference (and serves the constant case, where it's exact).
 function profileAt(s, path) {
   let seg = path.segments[path.segments.length - 1];
   for (const sg of path.segments) { if (s <= sg.sEnd) { seg = sg; break; } }
@@ -594,16 +680,9 @@ function profileAt(s, path) {
     const sec = path.sections[seg.si];
     return { inner: sec.id / 2, outer: sec.id / 2 + sec.w };
   }
-  // A Ø change on a STRAIGHT run is an even-thickness shell: the bore is offset
-  // perpendicular to the outer surface, so the wall is a constant-thickness band
-  // (steep when short, gentle when long). On a bend that same offset would need to
-  // differ on the concave vs convex side, which one bore radius can't do, so a
-  // bent reduction stays a plain radial cone (lengthened in makePath to stay thick).
   const len = seg.sEnd - seg.sStart;
   const t = len > 0 ? (s - seg.sStart) / len : 1;
   const { inner, wall } = transitionAt(seg.tr, t);
-  if (seg._dR === undefined) seg._dR = transitionDeltaOuter(seg.tr);
-  if (seg._dR > 1e-6 && seg.straight) return { inner: shellInnerRadius(seg, s), outer: inner + wall };
   return { inner, outer: inner + wall };
 }
 
@@ -776,16 +855,28 @@ function innerEndFeature(end, baseInner, sec) {
 const TEX_UREPEAT = 8;
 const TEX_VSCALE = 6;
 
-// `r` is either a scalar radius or a function (k, θ) → radius, letting a station
-// vary its radius by angle (used by the teeth end treatment). Emits N+1 vertices
-// - the last duplicates the first position but carries u at the full wrap - so a
-// wrap-around texture has no seam at the ring closure. The k=0 / k=N index pair
-// is recorded in `seams` so their normals can be welded back together (the extra
-// vertex is only for UVs, not a shading crease). `vCoord` is the v texture
-// coordinate; pass `uvs`/`seams` = null to skip.
-function ring(out, uvs, seams, path, s, r, N, vCoord) {
-  const { P, T } = path.at(s);
-  const u = [0, 0, 1], v = [T[1], -T[0], 0];
+// Emits the N+1 vertices of one cross-section ring for station `st` — the last
+// duplicates the first position but carries u at the full wrap, so a wrap-around
+// texture has no seam at the ring closure. The k=0 / k=N index pair is recorded
+// in `seams` so their normals can be welded back together (the extra vertex is
+// only for UVs, not a shading crease). `st.r` is either a scalar radius or a
+// function (k, θ) → radius, letting a station vary its radius by angle (the
+// teeth end treatment). A station is normally { s, r } — centered on the
+// centerline at arclength s — but an envelope station carries its own bend-plane
+// center C and in-plane direction v (toward its top point), letting rings sit
+// off-center through a transition. `vCoord` is the v texture coordinate; pass
+// `uvs`/`seams` = null to skip.
+function ring(out, uvs, seams, path, st, N, vCoord) {
+  let P, v;
+  if (st.C) {
+    P = [st.C[0], st.C[1], 0];
+    v = [st.v[0], st.v[1], 0];
+  } else {
+    const q = path.at(st.s);
+    P = q.P;
+    v = [q.T[1], -q.T[0], 0];
+  }
+  const u = [0, 0, 1], r = st.r;
   const base = out.length / 3;
   const fn = typeof r === 'function';
   for (let k = 0; k <= N; k++) {
@@ -815,7 +906,7 @@ function tubeSurface(verts, uvs, seams, idx, path, stations, N, outward) {
       const dr = (typeof st.r === 'number' && typeof prev.r === 'number') ? st.r - prev.r : 0;
       vAcc += Math.hypot(st.s - prev.s, dr);
     }
-    return ring(verts, uvs, seams, path, st.s, st.r, N, vAcc / TEX_VSCALE);
+    return ring(verts, uvs, seams, path, st, N, vAcc / TEX_VSCALE);
   });
   // pick winding by testing the first non-degenerate pair
   let flip = false;
@@ -830,7 +921,8 @@ function tubeSurface(verts, uvs, seams, idx, path, stations, N, outward) {
     const ny = e1[2] * e2[0] - e1[0] * e2[2];
     const nz = e1[0] * e2[1] - e1[1] * e2[0];
     if (nx * nx + ny * ny + nz * nz < 1e-12) continue;
-    const P = path.at(stations[i].s).P;
+    const st0 = stations[i];
+    const P = st0.C ? [st0.C[0], st0.C[1], 0] : path.at(st0.s).P;
     const rad = [a[0] - P[0], a[1] - P[1], a[2] - P[2]];
     const dot = nx * rad[0] + ny * rad[1] + nz * rad[2];
     flip = outward ? dot < 0 : dot > 0;
@@ -840,7 +932,9 @@ function tubeSurface(verts, uvs, seams, idx, path, stations, N, outward) {
     // Two identical consecutive stations mean "hard edge here": emit no quad
     // between them, so their (coincident) rings keep separate normals. Used to
     // give a saw-tooth barb crisp corners instead of smoothing ramp into cliff.
-    if (stations[i].s === stations[i + 1].s && stations[i].r === stations[i + 1].r) continue;
+    // (Envelope stations can legitimately repeat an s, so they never hard-edge.)
+    if (stations[i].s === stations[i + 1].s && stations[i].r === stations[i + 1].r
+        && !stations[i].C && !stations[i + 1].C) continue;
     const b0 = bases[i], b1 = bases[i + 1];
     for (let k = 0; k < N; k++) {
       const k1 = k + 1;   // N+1 vertices per ring, so no wraparound modulo
@@ -855,8 +949,8 @@ function tubeSurface(verts, uvs, seams, idx, path, stations, N, outward) {
 }
 
 function cap(verts, uvs, seams, idx, path, s, ri, ro, N, outSign) {
-  const bi = ring(verts, uvs, seams, path, s, ri, N, ri / TEX_VSCALE);
-  const bo = ring(verts, uvs, seams, path, s, ro, N, ro / TEX_VSCALE);
+  const bi = ring(verts, uvs, seams, path, { s, r: ri }, N, ri / TEX_VSCALE);
+  const bo = ring(verts, uvs, seams, path, { s, r: ro }, N, ro / TEX_VSCALE);
   const T = path.at(s).T;
   // test winding against the outward face direction
   const a = [verts[bi * 3], verts[bi * 3 + 1], verts[bi * 3 + 2]];
@@ -961,8 +1055,6 @@ export function build(raw, radialSegments) {
     const b = path.perBend[i];
     if (b.bend && b.faceClamped) {
       notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
-    } else if (b.lenFloored) {
-      notes.push('Bend ' + (i + 1) + ' reducer eased to ~' + (round(b.arcLen, 1)) + ' mm to keep full-thickness walls');
     }
   }
 
@@ -982,12 +1074,11 @@ export function build(raw, radialSegments) {
     if (sg.kind === 'section') {
       seg(sg.sStart, sg.sEnd, Math.max(4, Math.ceil(span / 2)));
     } else {
+      // Varying transitions get their stations from envelopeChains (the samples
+      // here are skipped for them); this sampling serves constant-profile bends.
       const bd = bends[sg.bi], b = path.perBend[sg.bi];
       const base = b.bend ? Math.max(24, Math.ceil(Math.abs(bd.ang) / 1.5)) : Math.max(6, Math.ceil(bd.l2 / 2));
-      // A Ø change is a square shoulder with steep steps — sample it finely so the
-      // ledge/step corners stay crisp instead of faceting across a coarse arc.
-      const dense = transitionDeltaOuter(sg.tr) > 1e-6 ? Math.min(400, Math.ceil(span / 0.2)) : 0;
-      seg(sg.sStart, sg.sEnd, Math.max(base, dense));
+      seg(sg.sStart, sg.sEnd, base);
     }
   }
 
@@ -997,17 +1088,26 @@ export function build(raw, radialSegments) {
   const iZoneB = innerFeatB[innerFeatB.length - 1].d;
   const sorted = [...new Set(samples)].sort((a, b) => a - b);
 
-  // Square-shoulder transitions are meridian POLYLINES (vertical in places, so
-  // not expressible as r(s) through profileAt); the assembly below splices each
-  // zone's polyline in place of its per-sample stations.
-  const shoulderZones = [];
+  // Varying transitions are meshed from their disc-envelope chains — ring
+  // stations that may sit off-center and repeat an s (vertical shoulder faces),
+  // so they are spliced into the assembly in place of per-sample profileAt
+  // stations. Each zone takes a short lead into its neighbouring sections
+  // (clamped to half the section and clear of the end-feature zones), so the
+  // chains stay flush with the section rings even when a shoulder's end circles
+  // overhang the junction.
+  const envZones = [];
   for (const sg of path.segments) {
-    if (sg.kind !== 'bend' || !sg.straight) continue;
-    if (transitionDeltaOuter(sg.tr) <= 1e-6 || !ribbonApplies(sg.tr)) continue;
-    const rib = shoulderRibbon(sg);
-    if (rib) shoulderZones.push({ sStart: sg.sStart, sEnd: sg.sEnd, outer: rib.outer, inner: rib.inner });
+    if (sg.kind !== 'bend' || !transitionVaries(sg.tr)) continue;
+    const wMaxTr = transitionMaxWall(sg.tr);
+    const spanA = path.sectionSpans[sg.bi], spanB = path.sectionSpans[sg.bi + 1];
+    const leadA = Math.max(0, Math.min(0.75 * wMaxTr, (spanA.sEnd - spanA.sStart) / 2,
+      sg.sStart - (Math.max(zoneA, iZoneA) + 0.05)));
+    const leadB = Math.max(0, Math.min(0.75 * wMaxTr, (spanB.sEnd - spanB.sStart) / 2,
+      (T - Math.max(zoneB, iZoneB) - 0.05) - sg.sEnd));
+    const ch = envelopeChains(sg, path, leadA, leadB);
+    envZones.push({ sStart: sg.sStart - leadA, sEnd: sg.sEnd + leadB, outer: ch.outer, inner: ch.inner });
   }
-  const zoneAt = (s) => shoulderZones.find((z) => s >= z.sStart - 1e-9 && s <= z.sEnd + 1e-9);
+  const zoneAt = (s) => envZones.find((z) => s >= z.sStart - 1e-9 && s <= z.sEnd + 1e-9);
 
   const inner = [];
   const innerDone = new Set();
@@ -1089,9 +1189,15 @@ export function build(raw, radialSegments) {
   // ---- 2D silhouette in the bend plane (for the schematic) --------------
   // `st.r` is a scalar radius, or { top, bot } to give the two sides different
   // radii - which the bend plane cuts at +v and −v (see silStations for teeth).
+  // Envelope stations carry their own bend-plane center/direction.
   const sil = (stations) => {
     const top = [], bot = [];
     for (const st of stations) {
+      if (st.C) {
+        top.push([st.C[0] + st.r * st.v[0], st.C[1] + st.r * st.v[1]]);
+        bot.push([st.C[0] - st.r * st.v[0], st.C[1] - st.r * st.v[1]]);
+        continue;
+      }
       const { P, T: t } = path.at(st.s);
       const v = [t[1], -t[0]];
       const rTop = typeof st.r === 'object' ? st.r.top : st.r;

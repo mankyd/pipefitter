@@ -265,17 +265,38 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
       }
     }
 
-    // Fixed middle bore diameter (only when not continuous), at the bend midpoint.
+    // Fixed middle bore diameter (only when not continuous). A middle Ø beyond
+    // both neighbours makes the bore bulge (or pinch) somewhere inside the bend,
+    // and that extremum is what the eye reads as "the" middle diameter — it need
+    // not land on the arc midpoint, and the drawn crest can fall short of the
+    // requested value (the wall envelope rounds it off). So measure: mark the
+    // station where the bore actually reaches its extremum and label the span
+    // there. A middle Ø that just passes through between the two ends has no
+    // extremum of its own — mark the midpoint, as before.
     if (!bd.idmSmooth && bd.arcLen > 0) {
-      const sMid = (bd.sStart + bd.sEnd) / 2;
       const iS = g.silhouette.inner.s, iT = g.silhouette.inner.top, iB = g.silhouette.inner.bot;
-      let a = 0;
-      while (a < iS.length - 2 && iS[a + 1] < sMid) a++;
-      const b = Math.min(a + 1, iS.length - 1);
-      const f = Math.max(0, Math.min(1, (sMid - iS[a]) / ((iS[b] - iS[a]) || 1)));
-      const lp = (u, wv) => [u[0] + (wv[0] - u[0]) * f, u[1] + (wv[1] - u[1]) * f];
-      const mt = lp(iT[a], iT[b]), mb = lp(iB[a], iB[b]);
-      tick(X(mt[0]), Y(mt[1]), X(mb[0]), Y(mb[1]), 'ø' + nv(bd.idm));
+      const spanAt = (k) => Math.hypot(iT[k][0] - iB[k][0], iT[k][1] - iB[k][1]);
+      const inBend = [];
+      for (let k = 0; k < iS.length; k++) if (iS[k] >= bd.sStart - 1e-6 && iS[k] <= bd.sEnd + 1e-6) inBend.push(k);
+      let mt, mb, dia;
+      const ends = inBend.length ? [spanAt(inBend[0]), spanAt(inBend[inBend.length - 1])] : null;
+      const dir = ends && bd.idm > Math.max(ends[0], ends[1]) + 1e-6 ? 1
+        : ends && bd.idm < Math.min(ends[0], ends[1]) - 1e-6 ? -1 : 0;
+      if (dir !== 0) {
+        let best = inBend[0];
+        for (const k of inBend) if (dir * (spanAt(k) - spanAt(best)) > 0) best = k;
+        mt = iT[best]; mb = iB[best]; dia = spanAt(best);
+      } else {
+        const sMid = (bd.sStart + bd.sEnd) / 2;
+        let a = 0;
+        while (a < iS.length - 2 && iS[a + 1] < sMid) a++;
+        const b = Math.min(a + 1, iS.length - 1);
+        const f = Math.max(0, Math.min(1, (sMid - iS[a]) / ((iS[b] - iS[a]) || 1)));
+        const lp = (u, wv) => [u[0] + (wv[0] - u[0]) * f, u[1] + (wv[1] - u[1]) * f];
+        mt = lp(iT[a], iT[b]); mb = lp(iB[a], iB[b]);
+        dia = Math.hypot(mt[0] - mb[0], mt[1] - mb[1]);
+      }
+      tick(X(mt[0]), Y(mt[1]), X(mb[0]), Y(mb[1]), 'ø' + nv(Math.round(dia * 10) / 10));
     }
   });
 

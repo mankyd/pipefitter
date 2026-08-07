@@ -28,7 +28,7 @@ Only the **first and last** sections have an **End Treatment** (the two open end
 - **Teeth** are like small sections  of hose barb, spaced out evenly around the opening. They can be rounded over
   smooth. They are useful for soft hoses lined with coiled wire, providing something for the hose to grab or screw
   onto without damaging it. Such hoses should still be clamped.
-- **Fit** makes a telescoping slip joint so two pipes slide together. Choose **Inside** for a spigot that plugs into
+- **Slip Joint** makes a telescoping joint so two pipes slide together. Choose **Inside** for a spigot that plugs into
   the mating pipe (its outer Ø is set to this section's inner Ø minus the tolerance), or **Outside** for a socket the
   mate plugs into (its bore is set to this section's outer Ø plus the tolerance). The stub is included in the
   section's length, so the section's length remains unchnaged. The two pipes bottom out against a flat shoulder, and a

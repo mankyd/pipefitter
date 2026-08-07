@@ -581,7 +581,7 @@ function endControls(i) {
       { value: 'flange', label: 'Flange' },
       { value: 'barb', label: 'Hose Barb' },
       { value: 'teeth', label: 'Teeth' },
-      { value: 'fit', label: 'Fit (slip joint)' },
+      { value: 'fit', label: 'Slip Joint' },
     ],
   }];
   if (end.type === 'chamfer') {
@@ -619,13 +619,13 @@ function endControls(i) {
     // plugs into the mate; Outside → a socket the mate plugs into. The lead-in
     // chamfer is on the outer tip (spigot) or the bore mouth (socket).
     list.push({
-      kind: 'enum', key: pre + 'FitSide', label: 'Fit', hint: '',
+      kind: 'enum', key: pre + 'FitSide', label: 'Joint side', hint: '',
       options: [
         { value: 'inside', label: 'Inside (spigot — plugs in)' },
         { value: 'outside', label: 'Outside (socket — receives)' },
       ],
     });
-    list.push(numCtrl(pre + 'FitL', 'Fit length', 'mm', 0.5, false, Math.max(0, sec.l - 1)));
+    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5, false, Math.max(0, sec.l - 1)));
     list.push(numCtrl(pre + 'FitTol', 'Tolerance (clearance)', 'mm', 0.05));
     list.push(numCtrl(pre + 'FitChX', 'Lead-in chamfer — X, along axis', 'mm', 0.1, false, end.FitL));
     list.push(numCtrl(pre + 'FitChY', 'Lead-in chamfer — Y, radial', 'mm', 0.1, false, sec.w));

@@ -15,7 +15,7 @@ minute rather than a CAD session.
 - **Any number of sections**, each with its own inner diameter, wall thickness, and
   length, joined by planar bends of any signed angle (alternating signs make S-curves).
 - **End treatments** on the first and last sections: plain, chamfer, flange (with bolt
-  holes), hose barb, teeth, and a **fit** (telescoping slip joint) for sliding two pipes
+  holes), hose barb, teeth, and a **slip joint** (telescoping) for sliding two pipes
   together.
 - **Live 3D preview** (orbit / pan / zoom, multiple render styles) and a **live 2D
   cross-section** with dimensions.

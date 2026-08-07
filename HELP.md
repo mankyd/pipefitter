@@ -42,6 +42,10 @@ turns, so two bends with alternating signs make an S-shape. An angle of 0° is a
 option measures the bend's length when it is straight, but changes to measure the length along the outside of the inner
 bend once there is any angle. All bends share one plane.
 
+An angled bend's face arc has a floor — the tightest bend its diameters and walls allow — and the control's range
+starts there. If growing a diameter later pushes the floor above a stored value, the bend is drawn at the floor
+instead: the control, the diagram, and a note in the header all show the raised value.
+
 By default a bend blends the inner diameter and wall thickness **smoothly** from one neighboring section to the
 other. Turn off **Continuous Ø** or **Continuous thickness** to instead set a fixed value at the middle of the
 transition: make the diameter larger than both neighbors for a bulge or smaller for a pinch, and likewise thicken or

@@ -221,6 +221,17 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
       const innerArr = (midIdx !== undefined && d2c(oBot[midIdx]) <= d2c(oTop[midIdx])) ? oBot : oTop;
       const outerArr = innerArr === oBot ? oTop : oBot;
       const face = idx.map((j) => innerArr[j]);
+      // Extend to the exact junction planes: stations rarely land exactly on
+      // sStart/sEnd, and B runs junction-to-junction — the same measurement the
+      // geometry solved the bend radius for, so the label matches the request.
+      if (face.length > 1) {
+        const lerpPt = (a, b, f) => [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+        const j0 = idx[0], j1 = idx[idx.length - 1];
+        if (j0 > 0 && sArr[j0] > bd.sStart + 1e-9 && sArr[j0 - 1] < bd.sStart - 1e-9)
+          face.unshift(lerpPt(innerArr[j0 - 1], innerArr[j0], (bd.sStart - sArr[j0 - 1]) / (sArr[j0] - sArr[j0 - 1])));
+        if (j1 < sArr.length - 1 && sArr[j1] < bd.sEnd - 1e-9 && sArr[j1 + 1] > bd.sEnd + 1e-9)
+          face.push(lerpPt(innerArr[j1], innerArr[j1 + 1], (bd.sEnd - sArr[j1]) / (sArr[j1 + 1] - sArr[j1])));
+      }
       if (face.length > 1) {
         ctx.save();
         ctx.strokeStyle = T.accent;
@@ -242,10 +253,11 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
         const mid = face[Math.floor(face.length / 2)];
         const toC = [X(c[0]) - X(mid[0]), Y(c[1]) - Y(mid[1])];
         const L = Math.hypot(toC[0], toC[1]) || 1;
-        // Label the arc actually drawn (the traced inner face), not the requested
-        // l2 — the bend may have been lengthened to keep its inner wall thick.
-        const arcActual = Math.round(face.reduce((sum, q, k) => k ? sum + Math.hypot(q[0] - face[k - 1][0], q[1] - face[k - 1][1]) : 0, 0) * 10) / 10;
-        boxLabel(X(mid[0]) + (toC[0] / L) * 22, Y(mid[1]) + (toC[1] / L) * 22, tag + ' arc ' + nv(arcActual) + uu, T.accent);
+        // Label the effective B the geometry drew: the requested arc, or the
+        // raised floor when the diameters clamped it. The bend's own control and
+        // the header note show the same value, so the three readouts agree.
+        const bEff = Math.round((bd.faceClamped ? bd.minFace : bd.l2) * 10) / 10;
+        boxLabel(X(mid[0]) + (toC[0] / L) * 22, Y(mid[1]) + (toC[1] / L) * 22, tag + ' arc ' + nv(bEff) + uu, T.accent);
 
         // Angle readout just outside the outer (convex) bend face at its midpoint.
         const outMid = outerArr[midIdx];

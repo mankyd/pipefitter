@@ -234,8 +234,14 @@ function fitEnd(sec, index, notes) {
   } else if (e.type === 'barb') {
     const maxSpan = secLen * 0.85;
     if (e.Bn * e.Bp > maxSpan) {
-      e.Bn = Math.max(1, Math.floor(maxSpan / e.Bp));
-      notes.push(label + ' barbs reduced to ' + e.Bn + ' — no room for more');
+      const n = Math.max(1, Math.floor(maxSpan / e.Bp));
+      if (n < e.Bn) { e.Bn = n; notes.push(label + ' barbs reduced to ' + e.Bn + ' — no room for more'); }
+      // Even a single barb can outrun a short section; the pitch must give too,
+      // or the feature would spill past the junction into the bend.
+      if (e.Bn * e.Bp > maxSpan) {
+        e.Bp = round(maxSpan / e.Bn, 2);
+        notes.push(label + ' barb pitch shortened to ' + e.Bp + ' mm to fit the section');
+      }
     }
   } else if (e.type === 'teeth') {
     // Teeth share the circle: their angular widths can't sum past 360°.
@@ -309,8 +315,10 @@ function rot2(vx, vy, a) {
 }
 
 // Build the centerline as a chain of straight/arc segments in the z=0 plane.
-// Returns `at(s) → {P, T}` plus per-segment and per-bend metadata.
-function makePath(p) {
+// Returns `at(s) → {P, T}` plus per-segment and per-bend metadata. `endClear`
+// gives the axial depth of the two end-feature zones (outer or bore, whichever
+// reaches further), which the envelope leads must stay clear of.
+function makePath(p, endClear) {
   const sections = p.sections, bends = p.bends;
   const N = sections.length;
   const segments = [];
@@ -331,16 +339,28 @@ function makePath(p) {
       const A = (bd.ang * Math.PI) / 180;                 // signed
       const bent = Math.abs(A) > 1e-6;
       const tr = transitionOf(sections[i], sections[i + 1], bd);
+      // Envelope leads into the neighbouring sections (see envelopeChains):
+      // half a section at most, clear of the end-feature zones. The downstream
+      // room counts the remaining straight lengths only — later bend arcs are
+      // not solved yet — which is exact for the last bend, the only bend the
+      // far end-zone clamp can realistically reach.
+      const wMaxTr = transitionMaxWall(tr);
+      let downstream = 0;
+      for (let j = i + 1; j < N; j++) downstream += sections[j].l;
+      const leadA = Math.max(0, Math.min(0.75 * wMaxTr, sections[i].l / 2, s - (endClear.a + 0.05)));
+      const leadB = Math.max(0, Math.min(0.75 * wMaxTr, sections[i + 1].l / 2, downstream - (endClear.b + 0.05)));
       // B is the arc length along the OUTER surface on the inner side of the
-      // bend; solve the centerline radius that produces exactly that length.
-      const sol = bent ? solveBendRadius(tr, Math.abs(A), bd.l2) : { R: 0, clamped: false };
+      // bend; solve the centerline radius that produces exactly that length on
+      // the face as drawn (the disc-envelope surface for a varying transition).
+      const sol = bent ? solveBendFace(tr, Math.abs(A), bd.l2, leadA, leadB) : { R: 0, clamped: false, minFace: 0 };
       const R = sol.R;
+      // No length floor for a straight (0°) transition: the wall is built as a
+      // disc envelope (envelopeChains), which keeps its thickness at any
+      // transition length — even zero, where it collapses to a rounded square
+      // shoulder at the junction.
       const arcLen = bent ? R * Math.abs(A) : bd.l2;
       const faceClamped = sol.clamped;
-      // No length floor: the wall is built as a disc envelope (envelopeChains),
-      // which keeps its thickness at any transition length — even zero, where it
-      // collapses to a rounded square shoulder at the junction.
-      const minFace = bent ? innerFaceLength(tr, Math.abs(A), minBendRadius(tr)) : 0;
+      const minFace = sol.minFace;
       const sStart = s, sEnd = s + arcLen;
       let center = null;
       if (bent) {
@@ -357,7 +377,7 @@ function makePath(p) {
         segments.push({ kind: 'bend', bi: i, straight: true, sStart, sEnd, tr, P0: [P[0], P[1], P[2]], dir: dir2, T: [dir2[0], dir2[1], 0] });
         P = [P[0] + arcLen * dir2[0], P[1] + arcLen * dir2[1], 0];
       }
-      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, sStart, sEnd });
+      perBend.push({ bi: i, R, arcLen, A, bend: bent, center, faceClamped, minFace, sStart, sEnd, leadA, leadB });
       s = sEnd;
     }
   }
@@ -431,6 +451,76 @@ function solveBendRadius(tr, A, target) {
     if (innerFaceLength(tr, A, mid) < target) lo = mid; else hi = mid;
   }
   return { R: (lo + hi) / 2, clamped: false };
+}
+
+// Length of the concave face as actually drawn. A varying transition's wall is
+// meshed as a disc envelope (envelopeChains), whose outer surface runs longer
+// than the analytic radial profile innerFaceLength integrates — the envelope
+// wraps the wall circles at a tilt and bulges past the blend. Build the same
+// chains over a local model of the bend (an arc between two straight leads;
+// face length is invariant to the rigid placement) and measure the concave
+// chain between the two junction planes, interpolating the exact junction
+// points — the same measurement the schematic labels. A constant-profile bend
+// is meshed from the radial profile itself, where the integral is exact.
+function envFaceLength(tr, A, R, leadA, leadB) {
+  if (!transitionVaries(tr)) return innerFaceLength(tr, A, R);
+  const arc = R * A;
+  const at = (s) => {
+    if (s <= 0) return { P: [s, 0, 0], T: [1, 0, 0] };
+    const phi = Math.min(s, arc) / R, c = Math.cos(phi), sn = Math.sin(phi);
+    const P = [R * sn, R * (1 - c), 0];
+    if (s >= arc) { const d = s - arc; P[0] += d * c; P[1] += d * sn; }
+    return { P, T: [c, sn, 0] };
+  };
+  const st = envelopeChains({ tr, sStart: 0, sEnd: arc }, { at }, leadA, leadB).outer;
+  if (st.length < 2) return innerFaceLength(tr, A, R);
+  // Concave side: whichever envelope edge runs nearer the bend pivot (0, R).
+  const pt = (q, sgn) => [q.C[0] + sgn * q.r * q.v[0], q.C[1] + sgn * q.r * q.v[1]];
+  const d2 = (q, sgn) => { const p = pt(q, sgn); return p[0] * p[0] + (p[1] - R) * (p[1] - R); };
+  const mid = st[Math.floor(st.length / 2)];
+  const sgn = d2(mid, 1) <= d2(mid, -1) ? 1 : -1;
+  const lerpPt = (a, b, f) => [lerp(a[0], b[0], f), lerp(a[1], b[1], f)];
+  let first = -1, last = -1;
+  for (let i = 0; i < st.length; i++) {
+    if (st[i].s >= -1e-6 && st[i].s <= arc + 1e-6) { if (first < 0) first = i; last = i; }
+  }
+  if (first < 0 || last <= first) return innerFaceLength(tr, A, R);
+  const pts = [];
+  if (first > 0 && st[first].s > 1e-9 && st[first - 1].s < -1e-9)
+    pts.push(lerpPt(pt(st[first - 1], sgn), pt(st[first], sgn), -st[first - 1].s / (st[first].s - st[first - 1].s)));
+  for (let i = first; i <= last; i++) pts.push(pt(st[i], sgn));
+  if (last < st.length - 1 && st[last].s < arc - 1e-9 && st[last + 1].s > arc + 1e-9)
+    pts.push(lerpPt(pt(st[last], sgn), pt(st[last + 1], sgn), (arc - st[last].s) / (st[last + 1].s - st[last].s)));
+  let L = 0;
+  for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  return L;
+}
+
+// Solve R so the DRAWN concave-face length equals the requested B. The analytic
+// solve is the fast inner model; its target is corrected until the
+// envelope-measured face converges (the two differ by a slowly-varying offset,
+// so 2-3 rounds settle it). The measured length grows with R, so a plain
+// bisection backstops any profile the correction loop can't pin down. Also
+// reports the face floor — the drawn length at the tightest radius, which is
+// exactly what the schematic shows when the request is clamped up to it.
+function solveBendFace(tr, A, target, leadA, leadB) {
+  const lo = minBendRadius(tr);
+  const minFace = envFaceLength(tr, A, lo, leadA, leadB);
+  if (minFace >= target) return { R: lo, clamped: true, minFace };
+  let t = target, R = lo;
+  for (let k = 0; k < 6; k++) {
+    R = Math.max(lo, solveBendRadius(tr, A, t).R);
+    const face = envFaceLength(tr, A, R, leadA, leadB);
+    if (Math.abs(face - target) < 0.01) return { R, clamped: false, minFace };
+    t -= face - target;
+  }
+  let rLo = lo, rHi = Math.max(R, lo + 1);
+  while (envFaceLength(tr, A, rHi, leadA, leadB) < target && rHi < 1e6) rHi *= 2;
+  for (let k = 0; k < 40; k++) {
+    const mid = (rLo + rHi) / 2;
+    if (envFaceLength(tr, A, mid, leadA, leadB) < target) rLo = mid; else rHi = mid;
+  }
+  return { R: (rLo + rHi) / 2, clamped: false, minFace };
 }
 
 // The maximum wall thickness a transition carries.
@@ -1049,23 +1139,32 @@ export function build(raw, radialSegments) {
   const hasTeeth = first.end.type === 'teeth' || last.end.type === 'teeth';
   // Teeth need more angular resolution to render their sectors and fillets.
   const N = hasTeeth ? Math.max(radialSegments || 84, 160) : (radialSegments || 84);
-  const path = makePath(p);
-  const T = path.total;
-  for (let i = 0; i < path.perBend.length; i++) {
-    const b = path.perBend[i];
-    if (b.bend && b.faceClamped) {
-      notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
-    }
-  }
 
-  // ---- longitudinal sampling -------------------------------------------
-  // End features only exist on the first and last sections.
+  // End features only exist on the first and last sections. Their zones are
+  // needed before the path: the bend solver keeps its envelope leads clear of
+  // them (and the same leads later place the meshed envelope chains).
   const Ofirst = od[0] / 2, Olast = od[nSec - 1] / 2;
   const featA = endFeature(first.end, Ofirst, first);
   const featB = endFeature(last.end, Olast, last);
   const zoneA = featA[featA.length - 1].d;
   const zoneB = featB[featB.length - 1].d;
+  const innerFeatA = innerEndFeature(first.end, first.id / 2, first);
+  const innerFeatB = innerEndFeature(last.end, last.id / 2, last);
+  const iZoneA = innerFeatA[innerFeatA.length - 1].d;
+  const iZoneB = innerFeatB[innerFeatB.length - 1].d;
 
+  const path = makePath(p, { a: Math.max(zoneA, iZoneA), b: Math.max(zoneB, iZoneB) });
+  const T = path.total;
+  for (let i = 0; i < path.perBend.length; i++) {
+    const b = path.perBend[i];
+    // Only note a raise the 0.1 mm readouts can actually show; a request within
+    // rounding of the floor (e.g. the slider parked on the floor itself) is met.
+    if (b.bend && b.faceClamped && b.minFace - bends[i].l2 > 0.05) {
+      notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
+    }
+  }
+
+  // ---- longitudinal sampling -------------------------------------------
   const samples = [];
   const push = (s) => { if (s >= -1e-9 && s <= T + 1e-9) samples.push(clamp(s, 0, T)); };
   const seg = (from, to, n) => { for (let i = 0; i <= n; i++) push(lerp(from, to, i / n)); };
@@ -1082,10 +1181,6 @@ export function build(raw, radialSegments) {
     }
   }
 
-  const innerFeatA = innerEndFeature(first.end, first.id / 2, first);
-  const innerFeatB = innerEndFeature(last.end, last.id / 2, last);
-  const iZoneA = innerFeatA[innerFeatA.length - 1].d;
-  const iZoneB = innerFeatB[innerFeatB.length - 1].d;
   const sorted = [...new Set(samples)].sort((a, b) => a - b);
 
   // Varying transitions are meshed from their disc-envelope chains — ring
@@ -1094,16 +1189,13 @@ export function build(raw, radialSegments) {
   // stations. Each zone takes a short lead into its neighbouring sections
   // (clamped to half the section and clear of the end-feature zones), so the
   // chains stay flush with the section rings even when a shoulder's end circles
-  // overhang the junction.
+  // overhang the junction. The leads are the ones makePath already used to
+  // solve each bend's radius, so the face the solver measured and the face
+  // meshed here are the same curve.
   const envZones = [];
   for (const sg of path.segments) {
     if (sg.kind !== 'bend' || !transitionVaries(sg.tr)) continue;
-    const wMaxTr = transitionMaxWall(sg.tr);
-    const spanA = path.sectionSpans[sg.bi], spanB = path.sectionSpans[sg.bi + 1];
-    const leadA = Math.max(0, Math.min(0.75 * wMaxTr, (spanA.sEnd - spanA.sStart) / 2,
-      sg.sStart - (Math.max(zoneA, iZoneA) + 0.05)));
-    const leadB = Math.max(0, Math.min(0.75 * wMaxTr, (spanB.sEnd - spanB.sStart) / 2,
-      (T - Math.max(zoneB, iZoneB) - 0.05) - sg.sEnd));
+    const { leadA, leadB } = path.perBend[sg.bi];
     const ch = envelopeChains(sg, path, leadA, leadB);
     envZones.push({ sStart: sg.sStart - leadA, sEnd: sg.sEnd + leadB, outer: ch.outer, inner: ch.inner });
   }

@@ -538,6 +538,23 @@ function numCtrl(key, label, hint, step, integer, maxOverride) {
   return { kind: 'num', key, label, hint, min: lim[0], max: maxOverride != null ? maxOverride : lim[1], step, numStep: integer ? 1 : 0.1 };
 }
 
+// The bend-length (B) control. For a bent transition B is the inner-bend face
+// arc, which has a floor — the tightest bend the neighboring diameters allow
+// (the schematic and the mesh never draw a shorter face). The slider's range
+// starts at that floor, and when the stored request sits below it (the floor
+// moved after the value was set, e.g. a diameter grew), the control shows the
+// effective value actually drawn — the same number the schematic labels and
+// the header note reports.
+function bendLenCtrl(key, pb) {
+  const c = numCtrl(key, pb && pb.bend ? 'Inner-bend face arc' : 'Length', 'mm', 1);
+  if (pb && pb.bend) {
+    const floor = round(pb.minFace, 1);
+    c.min = Math.min(floor, c.max);
+    c.display = (p) => (pb.faceClamped ? floor : getP(p, key));
+  }
+  return c;
+}
+
 // An "Outer Ø" slider that edits wall thickness underneath. The stored model
 // keeps wall - geometry and every constraint depend on it - but this control
 // shows and steers the outer diameter (inner + 2·wall), converting back to wall
@@ -676,7 +693,7 @@ function groupModel(g) {
         presets: [-90, -45, -22.5, -11.25, 0, 11.25, 22.5, 45, 90], presetKey: bpre + 'ang',
         controls: [
           numCtrl(bpre + 'ang', 'Bend angle', 'deg', 1),
-          numCtrl(bpre + 'l2', g.path.bends[i] && g.path.bends[i].bend ? 'Inner-bend face arc' : 'Length', 'mm', 1),
+          bendLenCtrl(bpre + 'l2', g.path.bends[i]),
           { kind: 'toggle', key: bpre + 'idmSmooth', label: 'Continuous Ø', title: 'Blend the inner diameter smoothly across this bend' },
           ...(bend.idmSmooth ? [] : [
             numCtrl(bpre + 'idm', 'Inner Ø', 'mm', 0.5),
@@ -897,7 +914,8 @@ function buildPanel(groups) {
         const num = h('input', 'input field-num-input', {
           type: 'number', min: dMin, max: dMax, step: dNumStep, 'data-num': c.key,
         });
-        const rawInit = c.derived === 'od' ? odValue(c, state.params) : getP(state.params, c.key);
+        const rawInit = c.derived === 'od' ? odValue(c, state.params)
+          : c.display ? c.display(state.params) : getP(state.params, c.key);
         const initVal = conv ? toDisp(rawInit) : rawInit;
         range.value = initVal;
         num.value = initVal;
@@ -954,7 +972,8 @@ function updatePanelValues(groups) {
         const conv = isLenCtrl(c);
         const range = el.panelGrid.querySelector(`[data-range="${c.key}"]`);
         const num = el.panelGrid.querySelector(`[data-num="${c.key}"]`);
-        const rawVal = c.derived === 'od' ? odValue(c, p) : getP(p, c.key);
+        const rawVal = c.derived === 'od' ? odValue(c, p)
+          : c.display ? c.display(p) : getP(p, c.key);
         const val = conv ? toDisp(rawVal) : rawVal;
         const v = String(val),
           mx = String(conv ? dispBound(c.max, 'max') : c.max),

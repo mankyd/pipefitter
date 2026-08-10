@@ -207,8 +207,25 @@ function applyView(v) {
   orbit.pol = clampPol(v.pol);
   orbit.dist = clampDist(v.dist);
   orbit.target.set(v.tx, v.ty, v.tz);
+  reseatTargetToContent();   // heal any far-drifted target so pan/zoom stay calibrated
   userView = true; framed = true; hasCustomView = true;   // an explicit view: don't auto-reframe
   draw();
+}
+
+// Slide the look-at target along the view ray to the model's depth, leaving the
+// image untouched (the target's distance doesn't affect what's rendered — only
+// pan/zoom sensitivity and the orbit centre). Older saved views could park the
+// target far out in empty space with a tiny dist, which made pan/zoom crawl.
+function reseatTargetToContent() {
+  const g = geometry();
+  if (!g) return;
+  const center = new THREE.Vector3(0, g.bbox.size[1] / 2, 0);   // model centre (see syncMesh centring)
+  const dir = dirToCam();                                       // target -> camera, unit
+  const camPos = orbit.target.clone().addScaledVector(dir, orbit.dist);
+  const view = dir.clone().negate();                            // camera -> scene
+  const d = clampDist(center.sub(camPos).dot(view));            // content depth along the view ray
+  orbit.dist = d;
+  orbit.target.copy(camPos).addScaledVector(view, d);
 }
 // The camera changed and the gesture ended - persist it to the URL.
 function commitView() {
@@ -1416,6 +1433,7 @@ function bindControls(node) {
   const ptrs = new Map();
   let mode = null, lx = 0, ly = 0, moved = false;
   let pinchDist = 0, pinchX = 0, pinchY = 0;   // two-finger baseline
+  let orbitPivot = null;   // model point under the cursor at drag start, applied on first move
 
   // Pan the orbit target by a screen delta, using the exact screen→world scale on
   // the plane through the target so a dragged point stays under the finger/cursor.
@@ -1442,6 +1460,10 @@ function bindControls(node) {
     if (ptrs.size === 1) {
       mode = e.shiftKey || e.button === 1 || e.button === 2 ? 'pan' : 'orbit';
       lx = e.clientX; ly = e.clientY; moved = false;
+      // Pivot on the point under the cursor (model, else the y=0 ground): captured at
+      // press (before the cursor drifts) and held for the whole drag. A bare click
+      // never moves.
+      orbitPivot = mode === 'orbit' ? pickPivotPoint(e.clientX, e.clientY) : null;
     } else if (ptrs.size === 2) {
       mode = 'gesture';
       gestureBaseline();
@@ -1466,8 +1488,12 @@ function bindControls(node) {
     lx = e.clientX; ly = e.clientY;
     if (dx || dy) moved = true;
     if (mode === 'orbit') {
-      orbit.az -= dx * 0.008;
-      orbit.pol = clampPol(orbit.pol - dy * 0.008);
+      if (orbitPivot) {
+        orbitAboutPivot(orbitPivot, dx, dy);         // rotate about the point under the cursor
+      } else {
+        orbit.az -= dx * 0.008;                      // no model under cursor: spin about the target
+        orbit.pol = clampPol(orbit.pol - dy * 0.008);
+      }
     } else {
       panBy(dx, dy);
     }
@@ -1481,7 +1507,7 @@ function bindControls(node) {
       // Two fingers dropped to one: resume orbiting from the finger left on screen
       // (reset the baseline so the view doesn't jump).
       const [p] = [...ptrs.values()];
-      mode = 'orbit'; lx = p.x; ly = p.y;
+      mode = 'orbit'; lx = p.x; ly = p.y; orbitPivot = null;   // no fresh pick: spin about target
       return;
     }
     if (ptrs.size >= 2) { gestureBaseline(); return; }
@@ -1512,6 +1538,57 @@ function dirToCam() {
     Math.cos(o.pol),
     Math.sin(o.pol) * Math.cos(o.az)
   );
+}
+
+const _raycaster = new THREE.Raycaster();
+const _ndc = new THREE.Vector2();
+const _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);   // y = 0: the ground the part sits on
+
+// World-space pivot for an orbit drag under the given client coords. Prefer the
+// point on the model; if the ray misses the tube, fall back to where it crosses
+// the ground plane (y = 0, under the grid). Null only if the ray never meets that
+// plane (parallel, or floor is behind the camera).
+// The offset projection (setViewOffset) is baked into the camera's matrices, so
+// plain [-1,1] NDC unprojects correctly.
+function pickPivotPoint(clientX, clientY) {
+  if (!mesh || !camera || !renderer) return null;
+  const r = renderer.domElement.getBoundingClientRect();
+  if (!r.width || !r.height) return null;
+  _ndc.x = ((clientX - r.left) / r.width) * 2 - 1;
+  _ndc.y = -((clientY - r.top) / r.height) * 2 + 1;
+  _raycaster.setFromCamera(_ndc, camera);
+  const hit = _raycaster.intersectObject(mesh, false)[0];
+  if (hit) return hit.point.clone();
+  // Fall back to the ground, but only when looking down at it steeply enough that
+  // the hit is nearby. A grazing ray meets y=0 hundreds of units away, and orbiting
+  // about a far pivot swings the camera wildly — reject it and spin about the target.
+  if (Math.abs(_raycaster.ray.direction.y) < 0.1) return null;
+  return _raycaster.ray.intersectPlane(_groundPlane, new THREE.Vector3());   // vector or null
+}
+
+// Orbit about an arbitrary world point `p` (the model point under the cursor),
+// keeping it fixed on screen. The camera aims at orbit.target (lookAt), so we
+// can't just move the target to p — that would re-center on it. Instead rotate
+// the camera position rigidly about p by the drag's yaw/pitch and rotate the view
+// direction by the same amount; because p is the centre of rotation it stays put
+// relative to the camera. The look-at target is only a point along the view ray
+// (its distance doesn't change the image), so we re-seat it at p's depth — that
+// keeps orbit.dist equal to how far away the thing we're circling actually is, so
+// pan and zoom stay calibrated instead of drifting off into empty space.
+function orbitAboutPivot(p, dx, dy) {
+  userView = true;
+  const dir = dirToCam();                            // target -> camera, unit
+  const camPos = orbit.target.clone().addScaledVector(dir, orbit.dist);
+  const right = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+  const q = new THREE.Quaternion()
+    .setFromAxisAngle(new THREE.Vector3(0, 1, 0), -dx * 0.008)          // yaw about world up
+    .multiply(new THREE.Quaternion().setFromAxisAngle(right, -dy * 0.008)); // then pitch
+  const newCam = p.clone().add(camPos.sub(p).applyQuaternion(q));
+  const u = dir.applyQuaternion(q).normalize();      // new target -> camera direction
+  orbit.pol = clampPol(Math.acos(clamp(u.y, -1, 1)));
+  orbit.az = Math.atan2(u.x, u.z);
+  orbit.dist = clampDist(newCam.distanceTo(p));       // look-at depth = distance to the pivot
+  orbit.target.copy(newCam).addScaledVector(u, -orbit.dist);
 }
 
 function draw() {

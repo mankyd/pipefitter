@@ -1615,7 +1615,113 @@ function draw() {
     camera.position.copy(o.target).add(d);
     camera.lookAt(o.target);
     renderer.render(scene, camera);
+    scheduleFavicon();
   });
+}
+
+// ── Live favicon ────────────────────────────────────────────────────────────
+// The tab icon is a miniature of the part being designed: the same scene and
+// materials, rendered off-screen into a small target from the direction the
+// user is currently looking, framed to the whole mesh, masked to a rounded
+// square and installed as a PNG data URI. Scheduled from draw() behind a
+// trailing debounce, so a drag repaints the icon once the gesture settles
+// instead of once per frame.
+const FAV_SIZE = 64;             // icon edge (px)
+const FAV_SS = 2;                // supersampling factor - see FAV_RES
+const FAV_RES = FAV_SIZE * FAV_SS;   // render edge; multisampled targets come back
+                                     // empty here (see below), so anti-alias by
+                                     // rendering big and downscaling instead
+const FAV_QUIET = 250;   // ms without a redraw before the icon is repainted
+let favTarget = null, favCam = null, favPix = null;
+let favCanvas = null, favRaw = null, favTimer = null;
+
+function scheduleFavicon() {
+  if (favTimer) clearTimeout(favTimer);
+  favTimer = setTimeout(paintFavicon, FAV_QUIET);
+}
+
+function paintFavicon() {
+  favTimer = null;
+  const pos = mesh && mesh.geometry.getAttribute('position');
+  if (!renderer || !pos || !pos.count) return;
+  try {
+    if (!favTarget) {
+      favTarget = new THREE.WebGLRenderTarget(FAV_RES, FAV_RES);
+      // Off-screen targets are written in linear space - only the canvas gets
+      // the sRGB encode - which would read back far too dark. r160 keys that
+      // conversion off the XR flag, so borrow it: sRGB values in a plain 8-bit
+      // buffer, exactly what the on-screen canvas receives. (It does not
+      // survive `samples`: an MSAA target flagged this way reads back empty,
+      // hence the supersample-and-shrink above.)
+      favTarget.texture.colorSpace = THREE.SRGBColorSpace;
+      favTarget.isXRRenderTarget = true;
+      favCam = new THREE.PerspectiveCamera(30, 1, 0.5, 5000);
+      favPix = new Uint8Array(FAV_RES * FAV_RES * 4);
+      favRaw = document.createElement('canvas');
+      favRaw.width = favRaw.height = FAV_RES;
+      favCanvas = document.createElement('canvas');
+      favCanvas.width = favCanvas.height = FAV_SIZE;
+    }
+    // Frame the whole part: the viewer's pan, zoom and offset projection are
+    // about fitting a big canvas around a floating card, none of which applies
+    // here. Only the orbit direction carries over.
+    const g = mesh.geometry;
+    if (!g.boundingSphere) g.computeBoundingSphere();
+    const s = g.boundingSphere;
+    const dist = (s.radius / Math.sin((favCam.fov * Math.PI) / 360)) * 1.08;   // 8% breathing room
+    favCam.position.copy(s.center).addScaledVector(dirToCam(), dist);
+    favCam.lookAt(s.center);
+
+    grid.visible = false;   // a floor grid is just noise at 64px
+    renderer.setRenderTarget(favTarget);
+    renderer.render(scene, favCam);
+    renderer.readRenderTargetPixels(favTarget, 0, 0, FAV_RES, FAV_RES, favPix);
+    renderer.setRenderTarget(null);
+    grid.visible = true;
+
+    // GL hands back bottom-up rows: flip them into the full-size canvas, shrink
+    // that onto the icon (the anti-aliasing pass), then knock the corners out so
+    // the icon keeps the rounded-square silhouette of the static one in
+    // index.html.
+    const raw = favRaw.getContext('2d');
+    const img = raw.createImageData(FAV_RES, FAV_RES);
+    const row = FAV_RES * 4;
+    for (let y = 0; y < FAV_RES; y++) {
+      const src = (FAV_RES - 1 - y) * row;
+      img.data.set(favPix.subarray(src, src + row), y * row);
+    }
+    raw.putImageData(img, 0, 0);
+
+    const ctx = favCanvas.getContext('2d');
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.imageSmoothingQuality = 'high';
+    ctx.clearRect(0, 0, FAV_SIZE, FAV_SIZE);
+    ctx.drawImage(favRaw, 0, 0, FAV_SIZE, FAV_SIZE);
+    if (ctx.roundRect) {
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.beginPath();
+      ctx.roundRect(0, 0, FAV_SIZE, FAV_SIZE, FAV_SIZE * 0.19);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    setFavicon(favCanvas.toDataURL('image/png'));
+  } catch (e) {
+    // A lost context or a failed readback just leaves the previous icon up.
+    renderer.setRenderTarget(null);
+    grid.visible = true;
+  }
+}
+
+// Swap in a fresh <link>: browsers pick up a new node more reliably than a
+// mutated href.
+function setFavicon(href) {
+  const link = document.createElement('link');
+  link.rel = 'icon';
+  link.type = 'image/png';
+  link.href = href;
+  const old = document.querySelector('link[rel="icon"]');
+  if (old) old.remove();
+  document.head.appendChild(link);
 }
 
 // The schematic card floats over the viewer, so bias the projection to the

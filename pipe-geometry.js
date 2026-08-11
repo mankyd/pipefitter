@@ -1148,8 +1148,13 @@ function tubeSurface(verts, uvs, seams, idx, path, stations, N, outward) {
     // between them, so their (coincident) rings keep separate normals. Used to
     // give a saw-tooth barb crisp corners instead of smoothing ramp into cliff.
     // (Envelope stations can legitimately repeat an s, so they never hard-edge.)
-    if (stations[i].s === stations[i + 1].s && stations[i].r === stations[i + 1].r
-        && !stations[i].C && !stations[i + 1].C) continue;
+    // A teeth zone rebuilds every station's radius as a fresh closure over the
+    // same spec, so two identical stations there hold two callable objects that
+    // are never ===. Same s and same spec means the same ring, and a zone only
+    // ever covers one end, so matching on "both callable" cannot conflate two.
+    const ra = stations[i].r, rb = stations[i + 1].r;
+    if (stations[i].s === stations[i + 1].s && !stations[i].C && !stations[i + 1].C
+        && (ra === rb || (typeof ra === 'function' && typeof rb === 'function'))) continue;
     const b0 = bases[i], b1 = bases[i + 1];
     for (let k = 0; k < N; k++) {
       const k1 = k + 1;   // N+1 vertices per ring, so no wraparound modulo
@@ -1340,10 +1345,16 @@ export function build(raw, radialSegments) {
   // pins the circle completely (centre + radius + axis) — two chains can reach
   // the same junction by different arithmetic and disagree in the last few
   // digits, so comparing the stored centre/axis/radius field-by-field misses
-  // them. A nanometre of slack is far below the smallest feature the model can
-  // hold (a 2 µm face arc) and far above the ~1e-13 mm of float noise these
-  // coordinates carry.
-  const RING_EPS = 1e-6;   // mm
+  // them. The slack has to clear more than float noise: two chains meeting at a
+  // junction agree on centre and radius but can disagree in the last digits of
+  // their axis, which swings the rim by ~1e-6 mm — enough to leave a band of
+  // collinear (zero-area) triangles behind while every stored field still looks
+  // distinct. A tenth of a micron is 20× below the smallest feature the model
+  // can hold (a 2 µm face arc) and ~1000× below the spacing of anything that
+  // reaches here: envelope rings sit ~0.3 mm apart, profile samples ~0.2 mm.
+  // End features stack stations far closer than that on purpose, but they go
+  // straight from endFeature into the list and never through pushStation.
+  const RING_EPS = 1e-4;   // mm
   const sameRing = (a, b) => {
     if (!a || !b || typeof a.r !== 'number' || typeof b.r !== 'number') return false;
     const rim = (st) => {

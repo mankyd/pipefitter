@@ -26,9 +26,9 @@ For how to use each control, open the in-app help (the **?** button); or read
 [`HELP.md`](HELP.md).
 
 <div style="display: flex; gap: 5px;">
-  <img src="assets/screenshot_a.png" alt="First" style="width: 33%;">
-  <img src="assets/screenshot_b.png" alt="Second" style="width: 33%;">
-  <img src="assets/screenshot_c.png" alt="Third" style="width: 33%;">
+  <img src="assets/screenshot_a.png" alt="First" style="width: 32%;">
+  <img src="assets/screenshot_b.png" alt="Second" style="width: 32%;">
+  <img src="assets/screenshot_c.png" alt="Third" style="width: 32%;">
 </div>
 
 ## Running it

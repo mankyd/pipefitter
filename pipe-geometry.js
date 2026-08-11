@@ -1326,14 +1326,38 @@ export function build(raw, radialSegments) {
   }
   const zoneAt = (s) => envZones.find((z) => s >= z.sStart - 1e-9 && s <= z.sEnd + 1e-9);
 
+  // Two consecutive stations that resolve to the SAME ring — same centre, same
+  // in-plane axis, same radius (see ring) — sweep a zero-area band: N triangles
+  // with no area, which mesh checkers flag as degenerate facets. That happens
+  // where two envelope zones abut. A middle section shorter than both its
+  // neighbours' leads has each lead clamped to half of it, so one zone ends
+  // exactly where the next begins and both emit the junction ring. Splicing a
+  // zone skips a leading repeat. Deliberate duplicates elsewhere are untouched:
+  // a barb cliff and a tooth edge stack two stations on purpose so the shared
+  // normal isn't averaged away, and those are pushed straight from endFeature,
+  // never through here.
+  const sameRing = (a, b) => {
+    if (!a || !b || typeof a.r !== 'number' || typeof b.r !== 'number') return false;
+    if (Math.abs(a.r - b.r) > 1e-9) return false;
+    const frame = (st) => {
+      if (st.C) return [st.C[0], st.C[1], st.v[0], st.v[1]];
+      const q = path.at(st.s);
+      return [q.P[0], q.P[1], q.T[1], -q.T[0]];
+    };
+    const fa = frame(a), fb = frame(b);
+    for (let i = 0; i < 4; i++) if (Math.abs(fa[i] - fb[i]) > 1e-9) return false;
+    return true;
+  };
+  const pushStation = (arr, q) => { if (!sameRing(arr[arr.length - 1], q)) arr.push(q); };
+
   const inner = [];
   const innerDone = new Set();
   for (const f of innerFeatA) inner.push({ s: f.d, r: f.r });
   for (const s of sorted) {
     if (s > iZoneA + 1e-6 && s < T - iZoneB - 1e-6) {
       const z = zoneAt(s);
-      if (z) { if (!innerDone.has(z)) { innerDone.add(z); for (const q of z.inner) inner.push(q); } continue; }
-      inner.push({ s, r: profileAt(s, path).inner });
+      if (z) { if (!innerDone.has(z)) { innerDone.add(z); for (const q of z.inner) pushStation(inner, q); } continue; }
+      pushStation(inner, { s, r: profileAt(s, path).inner });
     }
   }
   for (let i = innerFeatB.length - 1; i >= 0; i--) inner.push({ s: T - innerFeatB[i].d, r: innerFeatB[i].r });
@@ -1353,8 +1377,8 @@ export function build(raw, radialSegments) {
     for (const s of sorted) {
       if (s > zoneA + 1e-6 && s < T - zoneB - 1e-6) {
         const z = zoneAt(s);
-        if (z) { if (!done.has(z)) { done.add(z); for (const q of z.outer) arr.push(q); } continue; }
-        arr.push({ s, r: profileAt(s, path).outer });
+        if (z) { if (!done.has(z)) { done.add(z); for (const q of z.outer) pushStation(arr, q); } continue; }
+        pushStation(arr, { s, r: profileAt(s, path).outer });
       }
     }
     if (trimB) arr.push({ s: T - last.end.Ft, r: Olast });

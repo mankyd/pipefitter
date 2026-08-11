@@ -135,13 +135,13 @@ const surfaceCache = {};   // per-style { normalMap, roughnessMap, map }, built 
 const SCENE_THEME = {
   dark: {
     clear: 0x191b28,
-    grid: [0x4a4e5e, 0x2c2f3b], gridOpacity: 0.45,
+    grid: [0x8a90ab, 0x5a5f75], gridOpacity: 0.7,
     ground: 0x14151f,                                        // hemisphere light's lower half
     sky: ['#3a3e52', '#222431', '#181a25', '#0e0f16'],       // environment gradient, top → floor
   },
   light: {
     clear: 0xeceef6,
-    grid: [0x9297ab, 0xc3c7d6], gridOpacity: 0.75,
+    grid: [0x6f7590, 0xa8adc2], gridOpacity: 0.8,
     ground: 0xd6d9e6,
     // Keeps the dark theme's top-to-floor falloff rather than washing the whole
     // sphere white - a uniformly bright environment flattens the shading and
@@ -1575,9 +1575,9 @@ function bindControls(node) {
     if (ptrs.size === 1) {
       mode = e.shiftKey || e.button === 1 || e.button === 2 ? 'pan' : 'orbit';
       lx = e.clientX; ly = e.clientY; moved = false;
-      // Pivot on the point under the cursor (model, else the y=0 ground): captured at
-      // press (before the cursor drifts) and held for the whole drag. A bare click
-      // never moves.
+      // Pivot on the point under the cursor (model, else the nearest point on the
+      // grid): captured at press (before the cursor drifts) and held for the whole
+      // drag. A bare click never moves.
       orbitPivot = mode === 'orbit' ? pickPivotPoint(e.clientX, e.clientY) : null;
     } else if (ptrs.size === 2) {
       mode = 'gesture';
@@ -1659,10 +1659,88 @@ const _raycaster = new THREE.Raycaster();
 const _ndc = new THREE.Vector2();
 const _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);   // y = 0: the ground the part sits on
 
+// How far along a ground track (a ray flattened into y = 0) it is over the grid
+// square: [enter, exit] distances from its start, forward only, or null if it
+// never crosses the square. Slab method.
+function trackSpan(from, dir, h) {
+  let tmin = 0, tmax = Infinity;
+  for (const [o, d] of [[from.x, dir.x], [from.z, dir.z]]) {
+    if (Math.abs(d) < 1e-9) { if (o < -h || o > h) return null; continue; }   // parallel to this pair of edges
+    const t1 = (-h - o) / d, t2 = (h - o) / d;
+    tmin = Math.max(tmin, Math.min(t1, t2));
+    tmax = Math.min(tmax, Math.max(t1, t2));
+  }
+  return tmax >= tmin ? [tmin, tmax] : null;
+}
+
+// Nearest point of the grid square to a track that never passes over it.
+const _edgePoint = new THREE.Vector3();
+function closestEdgePoint(flat, h) {
+  const corner = [[-h, -h], [h, -h], [h, h], [-h, h]].map(([x, z]) => new THREE.Vector3(x, 0, z));
+  const best = new THREE.Vector3();
+  let bestD = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const d = flat.distanceSqToSegment(corner[i], corner[(i + 1) % 4], null, _edgePoint);
+    if (d < bestD) { bestD = d; best.copy(_edgePoint); }
+  }
+  return best;
+}
+
+// The point of the drawn grid - a square in y = 0, centred on the origin - that
+// a pick ray asks for. Everything is measured along the ray's ground track (the
+// ray flattened into the plane), because that track is the direction you're
+// pointing: the pivot is the ray's ground crossing, pulled back onto the stretch
+// of track that lies over the square.
+//
+// Working along the track, rather than off the 3D ray, is what makes the shallow
+// cases come out right. The closest point to a climbing ray is beside the camera
+// - so aiming past the far edge would pivot on the *near* one - and the closest
+// point to a far ground crossing is a corner, however far off to the side that
+// crossing is. Following the track instead: a crossing over the square is the
+// pivot; short of the square it clamps to the near edge; past it - including the
+// unbounded "past" of a ray that climbs and never lands - to the far edge.
+const _flatRay = new THREE.Ray();
+function closestGridPoint(ray) {
+  const h = (gridStep * gridCells) / 2;
+  const ground = ray.intersectPlane(_groundPlane, new THREE.Vector3());
+  const from = new THREE.Vector3(ray.origin.x, 0, ray.origin.z);
+  const len = Math.hypot(ray.direction.x, ray.direction.z);
+  if (len < 1e-9) {                                   // straight down (or up): no track to follow
+    const p = ground || from;
+    p.set(clamp(p.x, -h, h), 0, clamp(p.z, -h, h));
+    return p;
+  }
+  const dir = new THREE.Vector3(ray.direction.x / len, 0, ray.direction.z / len);
+  const span = trackSpan(from, dir, h);
+  if (span) {
+    // Distance along the track to the crossing. A ray that climbs away from the
+    // ground has none: that reads as infinitely far ahead, which lands the pivot
+    // on the far edge - the grid receding under the click.
+    const t = ground ? (ground.x - from.x) * dir.x + (ground.z - from.z) * dir.z : Infinity;
+    return from.addScaledVector(dir, clamp(t, span[0], span[1]));
+  }
+  // The track runs past the square without ever crossing it - a click off to one
+  // side. There's no stretch of it to clamp into, so use the nearest grid point
+  // to where the ray does land, which keeps the pivot beside the click rather
+  // than sending it off down the bearing.
+  if (ground) {
+    ground.set(clamp(ground.x, -h, h), 0, clamp(ground.z, -h, h));
+    return ground;
+  }
+  return closestEdgePoint(_flatRay.set(from, dir), h);   // off to the side *and* never lands
+}
+
 // World-space pivot for an orbit drag under the given client coords. Prefer the
-// point on the model; if the ray misses the tube, fall back to where it crosses
-// the ground plane (y = 0, under the grid). Null only if the ray never meets that
-// plane (parallel, or floor is behind the camera).
+// point on the model; off the model, orbit about the grid instead - always a
+// point on the drawn square, never past its edge.
+//
+// Staying inside the square is what makes the off-model case usable at all. The
+// ground plane is infinite, so a grazing ray crosses it hundreds of units out,
+// and orbiting about a pivot that far away swings the camera wildly - the old
+// code rejected those rays outright and spun about the target instead. The grid
+// is sized from the part's span, so resolving to a point on it bounds the pivot
+// to roughly the size of the part, and every ray now yields one worth using.
+//
 // The offset projection (setViewOffset) is baked into the camera's matrices, so
 // plain [-1,1] NDC unprojects correctly.
 function pickPivotPoint(clientX, clientY) {
@@ -1674,11 +1752,7 @@ function pickPivotPoint(clientX, clientY) {
   _raycaster.setFromCamera(_ndc, camera);
   const hit = _raycaster.intersectObject(mesh, false)[0];
   if (hit) return hit.point.clone();
-  // Fall back to the ground, but only when looking down at it steeply enough that
-  // the hit is nearby. A grazing ray meets y=0 hundreds of units away, and orbiting
-  // about a far pivot swings the camera wildly — reject it and spin about the target.
-  if (Math.abs(_raycaster.ray.direction.y) < 0.1) return null;
-  return _raycaster.ray.intersectPlane(_groundPlane, new THREE.Vector3());   // vector or null
+  return closestGridPoint(_raycaster.ray);
 }
 
 // Orbit about an arbitrary world point `p` (the model point under the cursor),

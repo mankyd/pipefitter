@@ -1336,16 +1336,24 @@ export function build(raw, radialSegments) {
   // a barb cliff and a tooth edge stack two stations on purpose so the shared
   // normal isn't averaged away, and those are pushed straight from endFeature,
   // never through here.
+  // Compared by where the ring's two rim points land in the bend plane, which
+  // pins the circle completely (centre + radius + axis) — two chains can reach
+  // the same junction by different arithmetic and disagree in the last few
+  // digits, so comparing the stored centre/axis/radius field-by-field misses
+  // them. A nanometre of slack is far below the smallest feature the model can
+  // hold (a 2 µm face arc) and far above the ~1e-13 mm of float noise these
+  // coordinates carry.
+  const RING_EPS = 1e-6;   // mm
   const sameRing = (a, b) => {
     if (!a || !b || typeof a.r !== 'number' || typeof b.r !== 'number') return false;
-    if (Math.abs(a.r - b.r) > 1e-9) return false;
-    const frame = (st) => {
-      if (st.C) return [st.C[0], st.C[1], st.v[0], st.v[1]];
-      const q = path.at(st.s);
-      return [q.P[0], q.P[1], q.T[1], -q.T[0]];
+    const rim = (st) => {
+      let P, v;
+      if (st.C) { P = st.C; v = st.v; }
+      else { const q = path.at(st.s); P = q.P; v = [q.T[1], -q.T[0]]; }
+      return [P[0] + st.r * v[0], P[1] + st.r * v[1], P[0] - st.r * v[0], P[1] - st.r * v[1]];
     };
-    const fa = frame(a), fb = frame(b);
-    for (let i = 0; i < 4; i++) if (Math.abs(fa[i] - fb[i]) > 1e-9) return false;
+    const ra = rim(a), rb = rim(b);
+    for (let i = 0; i < 4; i++) if (Math.abs(ra[i] - rb[i]) > RING_EPS) return false;
     return true;
   };
   const pushStation = (arr, q) => { if (!sameRing(arr[arr.length - 1], q)) arr.push(q); };
@@ -1407,10 +1415,16 @@ export function build(raw, radialSegments) {
   const verts = [], uvs = [], seams = [], idx = [];
   tubeSurface(verts, uvs, seams, idx, path, meshStations, N, true);
   tubeSurface(verts, uvs, seams, idx, path, inner, N, false);
+  // A bore chamfer deep enough to eat the whole wall closes the mouth to a knife
+  // edge: the end face is a zero-width annulus, and capping it lays down a full
+  // ring of zero-area triangles. The bore and the outer surface already end on
+  // the same circle there, so they meet without a cap — the solid stays closed
+  // once coincident rim vertices are welded, which is what STL/3MF import does.
+  const capped = (ri, ro) => typeof ri !== 'number' || typeof ro !== 'number' || Math.abs(ro - ri) > 1e-9;
   if (holesA) buildFlangeEnd(verts, uvs, seams, idx, path, N, { sFace: 0, sRoot: first.end.Ft, O: Ofirst, fw: first.end.Fw, rh: first.end.Fh / 2, n: first.end.Fn, boreR: first.id / 2, frontPlusTangent: false });
-  else cap(verts, uvs, seams, idx, path, 0, inner[0].r, meshStations[0].r, N, -1);
+  else if (capped(inner[0].r, meshStations[0].r)) cap(verts, uvs, seams, idx, path, 0, inner[0].r, meshStations[0].r, N, -1);
   if (holesB) buildFlangeEnd(verts, uvs, seams, idx, path, N, { sFace: T, sRoot: T - last.end.Ft, O: Olast, fw: last.end.Fw, rh: last.end.Fh / 2, n: last.end.Fn, boreR: last.id / 2, frontPlusTangent: true });
-  else cap(verts, uvs, seams, idx, path, T, inner[inner.length - 1].r, meshStations[meshStations.length - 1].r, N, 1);
+  else if (capped(inner[inner.length - 1].r, meshStations[meshStations.length - 1].r)) cap(verts, uvs, seams, idx, path, T, inner[inner.length - 1].r, meshStations[meshStations.length - 1].r, N, 1);
 
   const positions = new Float32Array(verts);
   const uv = new Float32Array(uvs);

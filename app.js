@@ -90,7 +90,11 @@ let cachedSig = '';   // parameter signature the cache was built for
 
 // three.js handles, initialized in initThree()
 const VIEW_HOME = { az: -0.7, pol: 1.30 };   // default orbit angles (az ≈ −40°, from the left; camera elevation ≈ 16°)
-const FRAME_K = 1.8;                          // auto-frame distance = span · FRAME_K · fitK (lower = tighter)
+// Auto-frame distance = span · FRAME_K · fitK (lower = tighter). Tuned against
+// the worst case for a part measured by its longest axis: a 90° elbow, whose
+// two equal legs put the diagonal well outside `span`. That one still clears
+// the canvas edges and the schematic card here, so anything flatter does too.
+const FRAME_K = 1.45;
 let renderer, scene, camera, mesh, material, grid;
 let orbit = null;
 let fitK = 1;
@@ -752,6 +756,7 @@ function groupModel(g) {
 // end-treatment types). Plain value changes update inputs in place, so a slider
 // drag or a number edit keeps focus and pointer capture.
 let panelSig = '';
+let panelBuilt = false;              // false until the first build, which starts every group collapsed
 const collapsedGroups = new Set();   // group ids whose body is collapsed (persists across rebuilds)
 
 // Group ids are positional (s<i>/b<i>), so an insert or remove that renumbers
@@ -828,6 +833,14 @@ function h(tag, cls, attrs) {
 }
 
 function buildPanel(groups) {
+  // The panel opens fully collapsed, so the part - not the controls - is the
+  // first thing you see. Seeding the set on the first build (rather than
+  // special-casing the render) means everything after it, including a rebuild
+  // triggered by adding a section, follows the normal persistence rules.
+  if (!panelBuilt) {
+    panelBuilt = true;
+    groups.forEach((g) => collapsedGroups.add(g.id));
+  }
   el.panelGrid.replaceChildren();
   for (const g of groups) {
     const section = h('section', 'group', { 'data-group-id': g.id });

@@ -434,30 +434,71 @@ function innerFaceLength(tr, A, R) {
   return len;
 }
 
-// Smallest R that keeps the concave face clear of the centerline. The hard limit
-// is R > maxOuter: at R = maxOuter the concave surface passes through the pivot
-// and the sweep degenerates (below it, the solid self-intersects). How much
-// clearance to hold above that depends on how the wall is built.
-// (For a straight run there is no bend, so this is unused.)
+// Smallest R (for a bend of half-angle-span A radians) that keeps the concave
+// face clear of the centerline. The hard limit is R > maxOuter: at R = maxOuter
+// the concave surface passes through the pivot and the sweep degenerates (below
+// it, the solid self-intersects). How much clearance to hold above that depends
+// on how the wall is built. (A straight run has no bend, so this is unused.)
 const BEND_CLEARANCE = 0.02;      // × maxOuter — the razor-cusp margin
-function minBendRadius(tr) {
+// The shortest concave face the mesh can still resolve. The face is sampled at
+// the bend's own station count, so what has to stay above float noise is its
+// LENGTH, not the corner radius: squeeze either the radius or the angle far
+// enough and neighbouring stations land on the same point, collapsing triangles
+// on the concave side. Two microns is ~50× the shortest face that still meshed
+// cleanly in testing, and is orders of magnitude below any printable feature.
+const MIN_FACE_ARC = 0.002;       // mm
+const FOLD_SAFETY = 2;            // × the measured clearance at which the face folds
+// Keyed on the transition's numbers and the angle — the only things the answer
+// depends on. Bounded because a drag sweeps a value through many settings.
+const minRadiusMemo = new Map();
+// The flat margin this used to enforce for every varying transition: two wall
+// thicknesses of clearance. Still the known-safe ceiling the measured floor is
+// searched below, and the fallback whenever measuring doesn't beat it.
+function bendSafeRadius(tr) {
   let mx = 0;
   for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
-  // A CONSTANT profile is swept from the exact radial profile (see profileAt):
-  // every station is a plain annulus, so the wall and bore hold their nominal
-  // thickness at any R > mx. Nothing needs rescuing, and the flat 2% margin —
-  // just enough to keep the concave face off the pivot — is the whole limit.
-  // That buys a corner radius of 2% of the outer radius: effectively a sharp
-  // elbow, which is the tightest this construction can be asked for.
-  if (!transitionVaries(tr)) return mx * (1 + BEND_CLEARANCE);
-  // A VARYING profile is meshed as a disc envelope instead, and a reduction
-  // shouldered inside a bend pinches the concave wall the tighter the bend. The
-  // 2% margin alone lets the outer surface graze the pivot in a razor cusp the
-  // constant-thickness bore can't rescue (it's the *outer* surface that's
-  // degenerate), so floor the clearance at a couple of wall thicknesses: a
-  // shallow/moderate bend then keeps full walls (a sharp bend still compresses
-  // some).
   return mx + Math.max(2 * transitionMaxWall(tr), BEND_CLEARANCE * mx);
+}
+function minBendRadius(tr, A) {
+  const a = Math.max(Math.abs(A), 1e-6);
+  const key = tr.idA + ',' + tr.idB + ',' + tr.idm + ',' + tr.wA + ',' + tr.wB + ',' + tr.w2 +
+    ',' + (tr.idmSmooth ? 1 : 0) + ',' + (tr.w2Smooth ? 1 : 0) + ',' + a;
+  const hit = minRadiusMemo.get(key);
+  if (hit !== undefined) return hit;
+
+  let mx = 0;
+  for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
+  // The floor every bend shares: enough face for the mesh to resolve (see
+  // MIN_FACE_ARC). A CONSTANT profile is swept from the exact radial profile
+  // (see profileAt) — every station is a plain annulus, so the wall and bore
+  // hold their nominal thickness at any R > mx and nothing else can go wrong.
+  const lo = mx + MIN_FACE_ARC / a;
+  let R = lo;
+  if (transitionVaries(tr)) {
+    // A VARYING profile is meshed as a disc envelope, which CAN cusp: the
+    // concave face folds through itself once the bend turns tighter than the
+    // wall's own rounding (see envFaceFolds). Where that happens is a property
+    // of the actual smoothed shape, not of the wall thickness, so measure it —
+    // a fixed margin is either far too conservative (most reductions never fold
+    // at any radius) or, for an extreme wall jump, in the wrong place entirely.
+    // The old flat 2·wall margin is the search ceiling and the fallback: it is
+    // known-safe, so this can only ever loosen the limit, never tighten it.
+    const safe = bendSafeRadius(tr);
+    if (envFaceFolds(tr, a, lo)) {
+      if (envFaceFolds(tr, a, safe)) R = safe;            // ceiling folds too — keep it
+      else {
+        let bad = lo, good = safe;                        // bisect the fold boundary
+        for (let i = 0; i < 18; i++) {
+          const mid = (bad + good) / 2;
+          if (envFaceFolds(tr, a, mid)) bad = mid; else good = mid;
+        }
+        R = Math.min(safe, mx + FOLD_SAFETY * (good - mx));
+      }
+    }
+  }
+  if (minRadiusMemo.size > 400) minRadiusMemo.clear();
+  minRadiusMemo.set(key, R);
+  return R;
 }
 
 // The thinnest wall the transition carries, and its total outer-radius change.
@@ -471,7 +512,7 @@ function transitionMinWall(tr) {
 
 // Solve R so the inner face arc equals the requested length. Monotonic in R.
 function solveBendRadius(tr, A, target) {
-  let lo = minBendRadius(tr);
+  let lo = minBendRadius(tr, A);
   if (innerFaceLength(tr, A, lo) >= target) return { R: lo, clamped: true };
   let hi = lo + Math.max(target, 1) / Math.max(A, 1e-3) + 100;
   while (innerFaceLength(tr, A, hi) < target && hi < 1e6) hi *= 2;
@@ -491,8 +532,11 @@ function solveBendRadius(tr, A, target) {
 // chain between the two junction planes, interpolating the exact junction
 // points — the same measurement the schematic labels. A constant-profile bend
 // is meshed from the radial profile itself, where the integral is exact.
-function envFaceLength(tr, A, R, leadA, leadB) {
-  if (!transitionVaries(tr)) return innerFaceLength(tr, A, R);
+// The concave (inner-bend) edge of that envelope, as a polyline between the two
+// junction planes. Both the length measurement and the fold test read this same
+// curve, so what gets measured is what gets meshed. Returns null when the
+// envelope came back too short to clip.
+function envConcaveFace(tr, A, R, leadA, leadB) {
   const arc = R * A;
   const at = (s) => {
     if (s <= 0) return { P: [s, 0, 0], T: [1, 0, 0] };
@@ -502,7 +546,7 @@ function envFaceLength(tr, A, R, leadA, leadB) {
     return { P, T: [c, sn, 0] };
   };
   const st = envelopeChains({ tr, sStart: 0, sEnd: arc }, { at }, leadA, leadB).outer;
-  if (st.length < 2) return innerFaceLength(tr, A, R);
+  if (st.length < 2) return null;
   // Concave side: whichever envelope edge runs nearer the bend pivot (0, R).
   const pt = (q, sgn) => [q.C[0] + sgn * q.r * q.v[0], q.C[1] + sgn * q.r * q.v[1]];
   const d2 = (q, sgn) => { const p = pt(q, sgn); return p[0] * p[0] + (p[1] - R) * (p[1] - R); };
@@ -513,16 +557,54 @@ function envFaceLength(tr, A, R, leadA, leadB) {
   for (let i = 0; i < st.length; i++) {
     if (st[i].s >= -1e-6 && st[i].s <= arc + 1e-6) { if (first < 0) first = i; last = i; }
   }
-  if (first < 0 || last <= first) return innerFaceLength(tr, A, R);
+  if (first < 0 || last <= first) return null;
   const pts = [];
   if (first > 0 && st[first].s > 1e-9 && st[first - 1].s < -1e-9)
     pts.push(lerpPt(pt(st[first - 1], sgn), pt(st[first], sgn), -st[first - 1].s / (st[first].s - st[first - 1].s)));
   for (let i = first; i <= last; i++) pts.push(pt(st[i], sgn));
   if (last < st.length - 1 && st[last].s < arc - 1e-9 && st[last + 1].s > arc + 1e-9)
     pts.push(lerpPt(pt(st[last], sgn), pt(st[last + 1], sgn), (arc - st[last].s) / (st[last + 1].s - st[last].s)));
+  return pts;
+}
+
+function envFaceLength(tr, A, R, leadA, leadB) {
+  if (!transitionVaries(tr)) return innerFaceLength(tr, A, R);
+  const pts = envConcaveFace(tr, A, R, leadA, leadB);
+  if (!pts || pts.length < 2) return innerFaceLength(tr, A, R);
   let L = 0;
   for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
   return L;
+}
+
+// Does the concave face cross itself at this radius? That crossing IS the cusp:
+// the wall's two surfaces are its centerline guide offset by half a wall, and an
+// offset curve folds exactly where the guide turns tighter than the offset
+// distance. Bend curvature adds to the profile's own, so tightening a bend can
+// push a transition that already turns near the wall scale over the edge. Tested
+// on the built curve rather than predicted from a rule of thumb, because the
+// guide is smoothed (ENV_ROUND) before it is wrapped — the shape that folds is
+// not the nominal profile. Leads are the nominal 0.75·wall the mesher would use;
+// they run inside the straight sections, where the guide has no curvature to
+// contribute, so the floor stays a property of the transition and its angle
+// alone (and doesn't shift when a neighbouring section is resized).
+function envFaceFolds(tr, A, R) {
+  const lead = 0.75 * transitionMaxWall(tr);
+  const p = envConcaveFace(tr, A, R, lead, lead);
+  if (!p || p.length < 4) return false;
+  const crosses = (a, b, c, d) => {
+    const r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]];
+    const den = r[0] * s[1] - r[1] * s[0];
+    if (Math.abs(den) < 1e-15) return false;            // parallel: no transversal crossing
+    const t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den;
+    const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+    return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
+  };
+  for (let i = 0; i < p.length - 1; i++) {
+    for (let j = i + 2; j < p.length - 1; j++) {         // skip the shared-vertex neighbour
+      if (crosses(p[i], p[i + 1], p[j], p[j + 1])) return true;
+    }
+  }
+  return false;
 }
 
 // Solve R so the DRAWN concave-face length equals the requested B. The analytic
@@ -533,8 +615,21 @@ function envFaceLength(tr, A, R, leadA, leadB) {
 // reports the face floor — the drawn length at the tightest radius, which is
 // exactly what the schematic shows when the request is clamped up to it.
 function solveBendFace(tr, A, target, leadA, leadB) {
-  const lo = minBendRadius(tr);
-  const minFace = envFaceLength(tr, A, lo, leadA, leadB);
+  let lo = minBendRadius(tr, A);
+  let minFace = envFaceLength(tr, A, lo, leadA, leadB);
+  // The measured face is NOT monotone in R. Across a big reduction taken at a
+  // shallow angle the profile's radial travel dominates its arc: shrinking R
+  // shortens the arc that travel must happen over, tilting the face steeper and
+  // making it LONGER. So the tightest radius doesn't always give the shortest
+  // face. Measure the old flat margin too — with these leads, not nominal ones —
+  // and keep whichever is genuinely shorter, so the floor can only improve.
+  if (transitionVaries(tr)) {
+    const safe = bendSafeRadius(tr);
+    if (safe > lo) {
+      const faceSafe = envFaceLength(tr, A, safe, leadA, leadB);
+      if (faceSafe < minFace) { lo = safe; minFace = faceSafe; }
+    }
+  }
   if (minFace >= target) return { R: lo, clamped: true, minFace };
   let t = target, R = lo;
   for (let k = 0; k < 6; k++) {

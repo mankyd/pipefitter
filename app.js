@@ -140,7 +140,7 @@ const SCENE_THEME = {
     sky: ['#3a3e52', '#222431', '#181a25', '#0e0f16'],       // environment gradient, top → floor
   },
   light: {
-    clear: 0xeceef6,
+    clear: 0xe0e3ee,
     grid: [0x6f7590, 0xa8adc2], gridOpacity: 0.8,
     ground: 0xd6d9e6,
     // Keeps the dark theme's top-to-floor falloff rather than washing the whole

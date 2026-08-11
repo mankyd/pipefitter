@@ -31,22 +31,22 @@ For how to use each control, open the in-app help (the **?** button); or read
   <tbody>
     <tr>
       <td width="25%" align="center" valign="top">
-        <a href="https://mankyd.github.io/pipefitter/#s=12~2~26|34.5~2.5~26&b=0~22~16~2.2~1~1&e0=plain&eN=plain&view=0,1.571,157.8,0,23,0">
+        <a href="assets/screenshot_a.png">
           <img src="assets/screenshot_a.png" alt="A simple pipe" style="max-width: 100%; width: 100%;">
         </a>
       </td>
       <td width="25%" align="center" valign="top">
-        <a href="https://mankyd.github.io/pipefitter/#s=12~2~26|30.5~2~26&b=90~38.3~16~2.2~1~1&e0=flange~5~2.5~4~3&eN=plain&render=wire&view=-0.625,1.448,163.2,-2.7,39.5,5.6">
+        <a href="assets/screenshot_b.png">
           <img src="assets/screenshot_b.png" alt="A wireframe of a bent pipe" style="max-width: 100%; width: 100%;">
         </a>
       </td>
       <td width="25%" align="center" valign="top">
-        <a href="https://github.io|15.44~13.27~5.34|52.68~9.63~20.17|52.68~9.63~59.2&b=55.93~66.3~32.19~9.68~0~0|56.92~64.7~9.92~6.19~0~1|-89.06~41.2~9.83~5.73~1~1&e0=chamfer~1.4~0.7~1.2~0.6&eN=barb~5~3~6&render=copper&expanded=1&view=-0.52,1.316,456.2,36.5,158.4,43.3">
+        <a href="assets/screenshot_c.png">
           <img src="assets/screenshot_c.png" alt="A diagram of a crazy pipe" style="max-width: 100%; width: 100%;">
         </a>
       </td>
       <td width="25%" align="center" valign="top">
-        <a href="https://github.io|15.44~13.27~5.34|52.68~9.63~20.17|52.68~9.63~59.2&b=55.93~66.3~32.19~9.68~0~0|56.92~64.7~9.92~6.19~0~1|-89.06~41.2~9.83~5.73~1~1&e0=chamfer~1.4~0.7~1.2~0.6&eN=barb~5~3~6&render=copper&view=-0.52,1.316,456.2,36.5,158.4,43.3">
+        <a href="assets/screenshot_d.png">
           <img src="assets/screenshot_d.png" alt="A rendering of the crazy pipe" style="max-width: 100%; width: 100%;">
         </a>
       </td>

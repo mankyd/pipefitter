@@ -1431,16 +1431,102 @@ function setRenderStyle(name) {
   markActiveStyle();
 }
 
-// (Re)build the floor grid at `step` mm spacing over `cells` cells. A helper
-// bakes its colors into vertex data, so both a spacing change and a theme
-// change mean a fresh one.
+// Floor-grid line weights, in CSS pixels: the ordinary lines, and the two
+// axis lines through the origin.
+const GRID_LINE_PX = 1.6, GRID_AXIS_PX = 2.6;
+
+// (Re)build the floor grid at `step` mm spacing over `cells` cells. Its colors
+// and spacing are baked in, so both a spacing change and a theme change mean a
+// fresh one.
+//
+// This is a ground plane carrying a grid shader rather than THREE.GridHelper,
+// because WebGL draws LineBasicMaterial exactly one device pixel wide whatever
+// `linewidth` says - too fine to read, and finer still on a HiDPI screen where
+// that's half a CSS pixel. Deriving each line's coverage from screen-space
+// derivatives instead gives it a width we can actually choose.
 function makeGrid(step, cells) {
   const th = SCENE_THEME[state.theme] || SCENE_THEME.dark;
-  if (grid) { scene.remove(grid); grid.geometry.dispose(); }
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+  // The square is centred on the origin and the lines fall on whole multiples
+  // of `step` from it, so an odd cell count puts the outer edge half a cell
+  // past the last line and the grid ends with no border. Round up to even.
+  cells += cells % 2;
   gridStep = step; gridCells = cells;
-  grid = new THREE.GridHelper(step * cells, cells, th.grid[0], th.grid[1]);
-  grid.material.transparent = true;
-  grid.material.opacity = th.gridOpacity;
+  const dpr = renderer ? renderer.getPixelRatio() : 1;
+  // Half a cell of bleed past the grid square, so the shader can draw the
+  // outermost lines at their full width instead of clipping them down
+  // the middle.
+  const geom = new THREE.PlaneGeometry(step * cells + step, step * cells + step);
+  geom.rotateX(-Math.PI / 2);
+  grid = new THREE.Mesh(geom, new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    uniforms: {
+      uStep: { value: step },
+      uHalf: { value: (step * cells) / 2 },
+      uMinor: { value: new THREE.Color(th.grid[1]) },
+      uAxis: { value: new THREE.Color(th.grid[0]) },
+      uMinorPx: { value: GRID_LINE_PX * dpr },
+      uAxisPx: { value: GRID_AXIS_PX * dpr },
+      uOpacity: { value: th.gridOpacity },
+    },
+    vertexShader: `
+      varying vec2 vXZ;
+      void main() {
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vXZ = world.xz;
+        gl_Position = projectionMatrix * viewMatrix * world;
+      }`,
+    fragmentShader: `
+      uniform vec3 uMinor, uAxis;
+      uniform float uStep, uHalf, uMinorPx, uAxisPx, uOpacity;
+      varying vec2 vXZ;
+
+      // Coverage of a line \`px\` device pixels wide, \`d\` from its centre, where
+      // \`fw\` is how far the coordinate advances per pixel. Working in pixels
+      // is the whole point: the line holds its weight however far the floor
+      // recedes, and gets a real antialiased edge.
+      float lineCoverage(float d, float fw, float px) {
+        float p = d / max(fw, 1e-8);
+        return 1.0 - smoothstep(px * 0.5 - 0.5, px * 0.5 + 0.5, p);
+      }
+
+      // Where a line ends: 1 inside \`lim\`, fading over the last pixel so the
+      // butt end gets an antialiased edge rather than a jagged one.
+      float within(float v, float lim, float fw) {
+        return 1.0 - smoothstep(lim - 0.5 * fw, lim + 0.5 * fw, abs(v));
+      }
+
+      void main() {
+        vec2 wfw = fwidth(vXZ);
+        vec2 c = vXZ / uStep;          // position in cells, so lines sit on integers
+        vec2 cfw = fwidth(c);
+        vec2 d = abs(fract(c - 0.5) - 0.5);
+
+        // Each family of lines is bounded by the extent it runs along, not by a
+        // shared box: lines of constant x run along z, so they stop at the z
+        // edge. Clipping both families to one box instead let every line poke a
+        // few pixels past the border wherever it crossed. They do run half the
+        // border line's width past it, so the corners close up square.
+        float tol = uMinorPx * 0.5;
+        float inX = within(vXZ.x, uHalf + tol * wfw.x, wfw.x);
+        float inZ = within(vXZ.y, uHalf + tol * wfw.y, wfw.y);
+
+        float minor = max(lineCoverage(d.x, cfw.x, uMinorPx) * inZ,
+                          lineCoverage(d.y, cfw.y, uMinorPx) * inX);
+        // Once cells are only a few pixels apart the lines merge into a solid
+        // sheet - dissolve them rather than let them alias into moire.
+        minor *= 1.0 - smoothstep(0.16, 0.5, max(cfw.x, cfw.y));
+
+        float axis = max(lineCoverage(abs(vXZ.x), wfw.x, uAxisPx) * inZ,
+                         lineCoverage(abs(vXZ.y), wfw.y, uAxisPx) * inX);
+
+        float a = max(minor, axis) * uOpacity;
+        if (a < 0.003) discard;
+        gl_FragColor = vec4(mix(uMinor, uAxis, step(minor, axis)), a);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  }));
   scene.add(grid);
 }
 

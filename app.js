@@ -547,12 +547,22 @@ async function openHelp() {
 function closeHelp() { el.helpBackdrop.hidden = true; }
 
 // ── Control model ───────────────────────────────────────────────────────────
-function numCtrl(key, label, hint, step, integer, maxOverride) {
+function numCtrl(key, label, hint, step, integer, maxOverride, minOverride) {
   const lim = limitOf(key);
   // The slider steps coarsely (`step`); the number field allows fine 0.1 entry,
-  // except integer counts, which stay whole. `maxOverride` lets a control cap
-  // below its static limit (e.g. chamfer depth capped at the section length).
-  return { kind: 'num', key, label, hint, min: lim[0], max: maxOverride != null ? maxOverride : lim[1], step, numStep: integer ? 1 : 0.1 };
+  // except integer counts, which stay whole. `maxOverride`/`minOverride` let a
+  // control cap below (or lift above) its static limits — e.g. chamfer depth
+  // capped at the section length, or a slip-joint section floored at its stop.
+  return { kind: 'num', key, label, hint, min: minOverride != null ? minOverride : lim[0], max: maxOverride != null ? maxOverride : lim[1], step, numStep: integer ? 1 : 0.1 };
+}
+
+// A slip-joint's stop is a solid floor (as thick as the wall, up to half the
+// joint length) that is part of the section, so the section can't be shorter
+// than it. Returns that floor for a fit-ended section, else undefined (no lift).
+function sectionMinLen(sec) {
+  const e = sec && sec.end;
+  if (!e || e.type !== 'fit') return undefined;
+  return round(Math.min(sec.w, e.FitL / 2), 2);
 }
 
 // The bend-length (B) control. For a bent transition B is the inner-bend face
@@ -659,7 +669,7 @@ function endControls(i) {
         { value: 'outside', label: 'Outside (socket — receives)' },
       ],
     });
-    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5, false, Math.max(0, sec.l - 1)));
+    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5));   // extends past the section; not capped by its length
     list.push(numCtrl(pre + 'FitTol', 'Tolerance (clearance)', 'mm', 0.05));
     list.push(numCtrl(pre + 'FitChX', 'Lead-in chamfer — X, along axis', 'mm', 0.1, false, end.FitL));
     list.push(numCtrl(pre + 'FitChY', 'Lead-in chamfer — Y, radial', 'mm', 0.1, false, sec.w));
@@ -686,7 +696,7 @@ function groupModel(g) {
       numCtrl('s' + i + '.id', 'Inner Ø', 'mm', 0.5),
       odCtrl('s' + i + '.w', sectionInner(i)),
       { kind: 'readout', key: 's' + i + '.outer', getWall: (p) => p.sections[i].w },
-      numCtrl('s' + i + '.l', 'Length', 'mm', 1),
+      numCtrl('s' + i + '.l', 'Length', 'mm', 1, false, undefined, sectionMinLen(sections[i])),
       ...(isFirst || isLast ? endControls(i) : []),
     ];
     // Only the two end sections can add or remove: the first prepends a new

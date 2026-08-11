@@ -32,8 +32,19 @@ export const END_TYPES = ['plain', 'chamfer', 'flange', 'barb', 'teeth', 'fit'];
 const END_WHOLE = new Set(['Fn', 'Bn', 'Tn']);
 // A slip-joint's shoulder ("stop") is a solid floor as thick as the section wall,
 // so it reads as a proper flange-like step; the tolerance gap is bridged over it.
-// Capped at half the fit length so a very short stub still has a spigot/socket.
-const fitFloor = (wall, L) => Math.min(wall, L * 0.5);
+// Capped at half the fit length so a very short stub still has a spigot/socket,
+// and at the section length so the floor never outgrows the section it sits in.
+const fitFloor = (wall, L, secLen) => Math.min(wall, L * 0.5, secLen);
+
+// The axial length a slip-joint adds to its section. The stop's floor is part of
+// the section — the measured section length runs from the interior stop wall to
+// the far end — so only the protruding stub (FitL minus the floor) extends past
+// it. The section thus keeps its full length between the stop and the bend.
+const fitLen = (sec) => {
+  const end = sec && sec.end;
+  if (!end || end.type !== 'fit') return 0;
+  return Math.max(0, end.FitL - fitFloor(sec.w, end.FitL, sec.l));
+};
 
 // Fresh default sub-objects (never share mutable references between params).
 export function defaultEnd() {
@@ -254,9 +265,12 @@ function fitEnd(sec, index, notes) {
     const maxF = Math.min(2.5 * e.Th, 4 * halfArc);
     if (e.Tf > maxF) { e.Tf = round(maxF, 2); notes.push(label + ' tooth fillet reduced to ' + e.Tf + ' mm'); }
   } else if (e.type === 'fit') {
-    // The stub is carved from the section's length, so it must leave a body.
-    const maxL = Math.max(0, secLen - 1);
-    if (e.FitL > maxL) { e.FitL = round(maxL, 2); notes.push(label + ' slip joint length limited to ' + e.FitL + ' mm by section length'); }
+    // The stub extends past the section rather than carving into it, so its
+    // length is independent of the section length (bounded only by FitL's limit).
+    // The stop's solid floor is part of the section, though, so the section can't
+    // be shorter than that floor thickness.
+    const floor = round(Math.min(wall, e.FitL * 0.5), 2);
+    if (sec.l < floor) { sec.l = floor; notes.push(label + ' lengthened to ' + sec.l + ' mm — the slip joint stop needs that thickness'); }
     // A spigot's tolerance can't exceed the bore (it would invert the wall).
     if (e.FitSide === 'inside') {
       const maxTol = Math.max(0, sec.id - 2 * wall - 0.5);
@@ -327,7 +341,10 @@ function makePath(p, endClear) {
   let P = [0, 0, 0], theta = 0, s = 0;
 
   for (let i = 0; i < N; i++) {
-    const L = sections[i].l;
+    // A fit end extends its section rather than eating into it, so the straight
+    // segment carries the section body plus any slip-joint stub protruding past
+    // the end face (the stub is meshed into the far end of this span).
+    const L = sections[i].l + fitLen(sections[i]);
     const dir = [Math.cos(theta), Math.sin(theta), 0];
     segments.push({ kind: 'section', si: i, straight: true, sStart: s, sEnd: s + L, P0: [P[0], P[1], P[2]], dir, T: [dir[0], dir[1], 0] });
     sectionSpans.push({ sStart: s, sEnd: s + L });
@@ -894,7 +911,7 @@ function endFeature(end, baseOuter, sec) {
     // spigot (outer steps DOWN to the stub, lead-in chamfer on the outer tip).
     // Outside → female socket (outer steps UP; the bore is chamfered instead).
     const st = fitStub(end, sec);
-    const L = end.FitL, floor = fitFloor(st.w, L);
+    const L = end.FitL, floor = fitFloor(st.w, L, sec.l);
     if (st.side === 'inside') {
       const cx = Math.min(end.FitChX, L - floor), cy = end.FitChY;
       if (cx > 0 && cy > 0) pts.push({ d: 0, r: st.sO - cy }, { d: cx, r: st.sO });
@@ -917,12 +934,13 @@ function endFeature(end, baseOuter, sec) {
 function innerEndFeature(end, baseInner, sec) {
   if (end.type === 'fit' && end.FitL > 0) {
     const st = fitStub(end, sec);
-    const L = end.FitL, floor = fitFloor(st.w, L);
+    const L = end.FitL, floor = fitFloor(st.w, L, sec.l);
     if (st.side === 'inside') {
       // Spigot bore runs straight through the insertion length, then opens back
       // out to the body bore as one gradual taper spanning the whole inside of
-      // the section (a smooth internal reducer, rather than an abrupt wall).
-      return [{ d: 0, r: st.sI }, { d: L - floor, r: st.sI }, { d: sec.l, r: st.I }];
+      // the section body (a smooth internal reducer, rather than an abrupt wall).
+      // The taper reaches the body bore at the far (bend) junction of the span.
+      return [{ d: 0, r: st.sI }, { d: L - floor, r: st.sI }, { d: sec.l + L - floor, r: st.I }];
     }
     // Socket bore = stub bore with a lead-in flare, running to the stop where it
     // steps DOWN to the body bore (the mate bottoms against that shoulder).
@@ -1336,7 +1354,20 @@ export function build(raw, radialSegments) {
       sections: sections.map((sc, i) => {
         const sp = path.sectionSpans[i];
         const a = path.at(sp.sStart), c = path.at(sp.sEnd);
-        return { id: sc.id, w: sc.w, l: sc.l, od: od[i], sStart: sp.sStart, sEnd: sp.sEnd, p0: [a.P[0], a.P[1]], p1: [c.P[0], c.P[1]], t: [a.T[0], a.T[1]] };
+        // The length tick runs from the slip joint's interior stop wall to the
+        // far end — that span is the section's length. A joint extends the span
+        // past the free end (s=0 for the first section, s=T for the last) by its
+        // protruding stub; trim that off so the tick starts at the stop and
+        // spans exactly sc.l.
+        const fit = fitLen(sc);
+        const lStart = i === 0 ? sp.sStart + fit : sp.sStart;
+        const lEnd = i === nSec - 1 ? sp.sEnd - fit : sp.sEnd;
+        const la = path.at(lStart), lc = path.at(lEnd);
+        return {
+          id: sc.id, w: sc.w, l: sc.l, od: od[i], sStart: sp.sStart, sEnd: sp.sEnd,
+          p0: [a.P[0], a.P[1]], p1: [c.P[0], c.P[1]], t: [a.T[0], a.T[1]],
+          lStart, lEnd, lp0: [la.P[0], la.P[1]], lp1: [lc.P[0], lc.P[1]],
+        };
       }),
       bends: path.perBend.map((b, i) => {
         const a = path.at(b.sStart), c = path.at(b.sEnd);

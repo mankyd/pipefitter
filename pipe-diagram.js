@@ -172,12 +172,14 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   // Length tick along a section's own axis, offset outward (toward −v) so it
   // clears the wall. With no bends at all, parts lie on x, so use the base line.
   const lengthTick = (sec, label) => {
-    if (!anyBend) { tick(X(sec.sStart), baseY, X(sec.sEnd), baseY, label); return; }
+    // lStart/lEnd (and lp0/lp1) span the section body only — a slip joint's
+    // extension past the free end isn't part of the section's length.
+    if (!anyBend) { tick(X(sec.lStart), baseY, X(sec.lEnd), baseY, label); return; }
     const v = [sec.t[1], -sec.t[0]];
     const off = sec.od / 2 + 6;
     tick(
-      X(sec.p0[0] - v[0] * off), Y(sec.p0[1] - v[1] * off),
-      X(sec.p1[0] - v[0] * off), Y(sec.p1[1] - v[1] * off),
+      X(sec.lp0[0] - v[0] * off), Y(sec.lp0[1] - v[1] * off),
+      X(sec.lp1[0] - v[0] * off), Y(sec.lp1[1] - v[1] * off),
       label
     );
   };

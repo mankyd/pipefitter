@@ -1635,6 +1635,7 @@ function bindControls(node) {
   let mode = null, lx = 0, ly = 0, moved = false;
   let pinchDist = 0, pinchX = 0, pinchY = 0;   // two-finger baseline
   let orbitPivot = null;   // model point under the cursor at drag start, applied on first move
+  let zoomPivot = null, zoomX = 0, zoomY = 0;   // same, for the run of scrolling at one cursor position
 
   // Pan the orbit target by a screen delta, using the exact screen→world scale on
   // the plane through the target so a dragged point stays under the finger/cursor.
@@ -1724,11 +1725,22 @@ function bindControls(node) {
   node.addEventListener('wheel', (e) => {
     e.preventDefault();
     userView = true;
-    orbit.dist = clampDist(orbit.dist * (1 + Math.sign(e.deltaY) * 0.09));
+    // Zoom into the point under the cursor, picked the way an orbit drag picks
+    // its pivot: the model if it's under there, else the nearest point on the
+    // grid. Held until the cursor moves, so a run of scrolling can't creep - a
+    // fresh pick each notch would chase the point sliding under a still cursor.
+    if (!zoomPivot || Math.abs(e.clientX - zoomX) > 2 || Math.abs(e.clientY - zoomY) > 2) {
+      zoomPivot = pickPivotPoint(e.clientX, e.clientY);
+      zoomX = e.clientX; zoomY = e.clientY;
+    }
+    const k = 1 + Math.sign(e.deltaY) * 0.09;
+    if (zoomPivot) dollyToPivot(zoomPivot, k);
+    else orbit.dist = clampDist(orbit.dist * k);
     draw();
-    // Zoom has no "release", so persist the pose a beat after scrolling stops.
+    // Zoom has no "release", so persist the pose a beat after scrolling stops -
+    // and treat that lull as the end of the gesture, so the next one re-picks.
     clearTimeout(wheelTimer);
-    wheelTimer = setTimeout(commitView, 350);
+    wheelTimer = setTimeout(() => { commitView(); zoomPivot = null; }, 350);
   }, { passive: false });
 }
 
@@ -1864,6 +1876,28 @@ function orbitAboutPivot(p, dx, dy) {
   orbit.az = Math.atan2(u.x, u.z);
   orbit.dist = clampDist(newCam.distanceTo(p));       // look-at depth = distance to the pivot
   orbit.target.copy(newCam).addScaledVector(u, -orbit.dist);
+}
+
+// Dolly by scale `k` about the world point `p` under the cursor, keeping it fixed
+// on screen: slide the camera along the line joining it to p, leaving the view
+// direction alone. p's bearing from the camera is unchanged by a move along that
+// line, so it projects to the same pixel and the view zooms into whatever is
+// under the cursor rather than into the middle of the canvas.
+//
+// The look-at target re-seats at p's depth for the reason orbitAboutPivot does:
+// orbit.dist stays the distance to the thing being looked at, so panning and the
+// next zoom step keep their calibration.
+function dollyToPivot(p, k) {
+  userView = true;
+  const u = dirToCam();                              // target -> camera, unit
+  const camPos = orbit.target.clone().addScaledVector(u, orbit.dist);
+  const toCam = camPos.sub(p);                       // p -> camera
+  const len = toCam.length();
+  if (len < 1e-6) { orbit.dist = clampDist(orbit.dist * k); return; }   // sitting on the pivot
+  const d = clampDist(len * k);
+  const newCam = p.clone().addScaledVector(toCam.divideScalar(len), d);
+  orbit.dist = d;
+  orbit.target.copy(newCam).addScaledVector(u, -d);
 }
 
 function draw() {

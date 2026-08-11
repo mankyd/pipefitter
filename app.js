@@ -847,12 +847,78 @@ function updateSchematicPlacement() {
   const card = el.schematic, br = el.overlayBr;
   if (!card) return;
   card.classList.remove('raised');   // always measure from the natural (low) position
-  if (swapped || !br) return;
+  if (swapped || !br || cardPos) return;   // placed by hand: the user owns the position
   const a = card.getBoundingClientRect(), b = br.getBoundingClientRect();
   const GAP = 12;
   const overlap = a.right + GAP > b.left && a.left < b.right + GAP &&
                   a.bottom > b.top && a.top < b.bottom;
   if (overlap) card.classList.add('raised');
+}
+
+// Where the card has been dragged to, in px from the viewer's left and bottom
+// edges - null until it's moved, so it keeps its docked corner (and the `raised`
+// nudge above) by default. Measured from the bottom to match the CSS, so the
+// card stays put when its height changes rather than sliding with the top edge.
+// Not persisted: like the theme, it's a per-session preference the URL doesn't
+// carry.
+let cardPos = null;
+
+// Push cardPos onto the card. While expanded the card fills the viewer via
+// `inset: 0`, and inline offsets would beat that, so they come off until it's
+// restored.
+function applyCardPos() {
+  const card = el.schematic;
+  if (!card) return;
+  if (swapped || !cardPos) { card.style.left = card.style.bottom = ''; return; }
+  card.style.left = cardPos.left + 'px';
+  card.style.bottom = cardPos.bottom + 'px';
+}
+
+// Keep the card inside the viewer - both as it's dragged and after a resize that
+// would otherwise strand it out of reach.
+function clampCardPos() {
+  const card = el.schematic, host = el.viewer;
+  if (!cardPos || !card || !host || swapped) return;
+  const v = host.getBoundingClientRect(), c = card.getBoundingClientRect();
+  cardPos.left = clamp(cardPos.left, 0, Math.max(0, v.width - c.width));
+  cardPos.bottom = clamp(cardPos.bottom, 0, Math.max(0, v.height - c.height));
+}
+
+// Drag the card by its title bar. The expand button shares that bar and has to
+// stay clickable, so presses landing on it are left alone. Docked only: expanded,
+// the card is the whole viewer and has nowhere to go.
+function bindSchematicDrag() {
+  const card = el.schematic;
+  const cap = card && card.querySelector('.schematic-cap');
+  if (!cap) return;
+  let dragId = null, sx = 0, sy = 0, startLeft = 0, startBottom = 0;
+  cap.addEventListener('pointerdown', (e) => {
+    if (swapped || e.button > 0 || e.target.closest('.schematic-expand')) return;
+    // Seed from where the card actually is, so the first drag picks up from the
+    // docked corner (or the raised one) without a jump.
+    const v = el.viewer.getBoundingClientRect(), c = card.getBoundingClientRect();
+    cardPos = { left: c.left - v.left, bottom: v.bottom - c.bottom };
+    startLeft = cardPos.left; startBottom = cardPos.bottom;
+    dragId = e.pointerId; sx = e.clientX; sy = e.clientY;
+    cap.setPointerCapture(dragId);
+    card.classList.add('dragging');
+    e.preventDefault();
+  });
+  cap.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== dragId) return;
+    cardPos.left = startLeft + (e.clientX - sx);
+    cardPos.bottom = startBottom - (e.clientY - sy);   // bottom-anchored: screen y runs the other way
+    clampCardPos();
+    applyCardPos();
+  });
+  const end = (e) => {
+    if (e.pointerId !== dragId) return;
+    try { cap.releasePointerCapture(dragId); } catch (err) { /* ignore */ }
+    dragId = null;
+    card.classList.remove('dragging');
+  };
+  cap.addEventListener('pointerup', end);
+  cap.addEventListener('pointercancel', end);
 }
 
 function h(tag, cls, attrs) {
@@ -2068,6 +2134,8 @@ function onResize() {
   // function returns early. Skipping it there let the canvas bitmap get
   // stretched non-uniformly by CSS to fill the new box.
   drawSchematic();
+  clampCardPos();               // a hand-placed card can be stranded by a shrinking viewer
+  applyCardPos();
   updateSchematicPlacement();   // raise the docked card only when it would hit the copyright
   const host = el.stage;
   if (!host || !renderer) return;
@@ -2127,6 +2195,8 @@ function applySwap(on) {
   resetDiagramView();  // always open (and close) at a clean fit; zoom/pan is expanded-only
   onResize();          // on restore, re-fit the 3D renderer (it's hidden while expanded)
   drawSchematic();     // redraw the diagram at its new size (onResize bails while the stage is hidden)
+  clampCardPos();      // restored at its docked size, it may not fit where it was left
+  applyCardPos();      // and the offsets come off entirely while expanded
   updateSchematicPlacement();
 }
 // Swap the 2D diagram and the 3D view, and persist the choice to the URL so a
@@ -2278,6 +2348,7 @@ function init() {
     b.addEventListener('click', () => setView(b.getAttribute('data-view')));
   });
   el.expand.addEventListener('click', toggleSwap);
+  bindSchematicDrag();
   el.diagramReset.addEventListener('click', () => { resetDiagramView(); drawSchematic(); });
   bindDiagramControls(el.diagram);
   el.help.addEventListener('click', openHelp);

@@ -422,12 +422,19 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   border: 1px solid var(--color-neutral-800); border-radius: var(--radius-md);
   background: var(--color-card); box-shadow: var(--shadow-md); overflow: hidden;
 }
+/* The title bar doubles as the card's drag handle (see bindSchematicDrag).
+   touch-action: none keeps a touch-drag from being claimed as a page gesture,
+   for the same reason it's set on the canvases above. */
 .schematic-cap {
   display: flex; justify-content: space-between; align-items: center;
   padding: 6px 9px; border-bottom: 1px solid var(--color-neutral-900);
   font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--color-neutral-600);
+  cursor: move; user-select: none; touch-action: none;
 }
+.schematic.dragging { box-shadow: var(--shadow-lg); }
+/* Expanded, the card is the whole viewer - nowhere to drag it to. */
+.viewer.swapped .schematic-cap { cursor: default; }
 .schematic-expand {
   flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;

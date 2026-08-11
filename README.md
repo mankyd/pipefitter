@@ -26,9 +26,10 @@ For how to use each control, open the in-app help (the **?** button); or read
 [`HELP.md`](HELP.md).
 
 <div style="display: flex; gap: 5px;">
-  <img src="assets/screenshot_a.png" alt="First" style="width: 32%;">
-  <img src="assets/screenshot_b.png" alt="Second" style="width: 32%;">
-  <img src="assets/screenshot_c.png" alt="Third" style="width: 32%;">
+  <img src="assets/screenshot_a.png" alt="A simple pipe" style="width: 24%;">
+  <img src="assets/screenshot_b.png" alt="A wireframe of a bent pipe" style="width: 24%;">
+  <img src="assets/screenshot_c.png" alt="A diagram of a crazy pipe" style="width: 24%;">
+  <img src="assets/screenshot_c.png" alt="A rendering of the crazy pipe" style="width: 24%;">
 </div>
 
 ## Running it

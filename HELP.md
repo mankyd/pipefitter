@@ -64,5 +64,7 @@ first or last end, to make 3D printing easier, or downloaded as-is.
 
 ## Questions/Comments/Concerns?
 
+The source code is available at <https://github.com/mankyd/pipefitter>
+
 Reach out to Dave - mankyd@gmail.com
 

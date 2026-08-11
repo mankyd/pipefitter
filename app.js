@@ -540,6 +540,10 @@ function renderMarkdown(md) {
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const inline = (s) => esc(s)
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    // Autolinks - <https://…> - matched after escaping, so the brackets around
+    // them are entities by now. Lazy up to the closing one, so a query string's
+    // own &amp; can't end the match early.
+    .replace(/&lt;(https?:\/\/[^\s]+?)&gt;/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>');

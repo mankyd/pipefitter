@@ -69,12 +69,12 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-.layout-switch, .units-switch {
+.units-switch {
   display: flex; gap: var(--space-1); padding: var(--space-1);
   border: 1px solid var(--color-neutral-900); border-radius: var(--radius-md);
   flex: 0 0 auto;
 }
-.layout-switch .btn, .units-switch .btn {
+.units-switch .btn {
   padding: 4px 9px; font-size: 11px;
   border-radius: var(--radius-sm); white-space: nowrap;
 }
@@ -222,7 +222,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .pnl {
   flex: 0 0 auto; overflow: auto;
   border: 1px solid var(--color-neutral-900);
-  background: linear-gradient(180deg, #1a1c29, var(--color-bg));
+  background: linear-gradient(180deg, var(--color-panel), var(--color-bg));
 }
 .pnl::-webkit-scrollbar { width: 9px; }
 .pnl::-webkit-scrollbar-thumb { background: var(--color-neutral-800); border-radius: 5px; }
@@ -233,10 +233,18 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   position: sticky; top: 0; z-index: 5;
   display: flex; gap: 8px;
   padding: 10px var(--space-6);
-  background: #1a1c29;
+  background: var(--color-panel);
   border-bottom: 1px solid var(--color-neutral-900);
 }
 .panel-toolbar .btn { flex: 1 1 0; padding: 5px 8px; font-size: 11px; }
+/* The side-swap arrow is an icon, so it keeps its width instead of taking a
+   third of the bar. `order` puts it past the two buttons when the panel is on
+   the left, and ahead of them when it's on the right (set from applyLayout). */
+.panel-toolbar .panel-side {
+  flex: 0 0 auto; padding: 5px 9px; font-size: 13px; line-height: 1;
+  color: var(--color-neutral-500);
+}
+.panel-toolbar .panel-side:hover { color: var(--color-text); }
 .panel-grid { display: grid; gap: var(--space-8); padding: var(--space-6); }
 
 .group { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
@@ -324,7 +332,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .viewer {
   flex: 1 1 auto; position: relative; min-width: 0; min-height: 0;
   overflow: hidden;
-  background: radial-gradient(120% 90% at 50% 15%, #20222f 0%, var(--color-bg) 70%);
+  background: radial-gradient(120% 90% at 50% 15%, var(--color-glow) 0%, var(--color-bg) 70%);
 }
 /* touch-action: none stops the browser from claiming a touch-drag as a page
    scroll/gesture mid-orbit (which fires pointercancel and freezes the drag). */
@@ -412,7 +420,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   position: absolute; bottom: var(--space-6); left: var(--space-6); margin: 0;
   width: 352px; z-index: 2;
   border: 1px solid var(--color-neutral-800); border-radius: var(--radius-md);
-  background: #1b1d2b; box-shadow: var(--shadow-md); overflow: hidden;
+  background: var(--color-card); box-shadow: var(--shadow-md); overflow: hidden;
 }
 .schematic-cap {
   display: flex; justify-content: space-between; align-items: center;

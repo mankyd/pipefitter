@@ -1,0 +1,54 @@
+/* Light theme: token overrides on top of dark.css, active when the document
+   carries data-theme="light" (set by applyTheme in app.js, from the topbar's
+   theme button).
+
+   Nothing here is a new rule - every component in dark.css and app.css already
+   draws from these tokens, and both ramps below are simply the dark ramps in
+   reverse. That works because the app never uses a ramp step as a literal
+   color: it uses it as a distance from the background. neutral-100 always means
+   "strongest against the page", neutral-900 "barely there", accent-900 "a wash
+   of accent behind text". Flipping the ends keeps every one of those readings
+   true, so a light theme costs an override block rather than a second stylesheet
+   of rules. */
+
+:root[data-theme="light"] {
+  --color-bg: #f4f5fa;
+  --color-surface: #ffffff;
+  --color-text: #1b1d28;
+  /* The mid accent that reads well on a dark ground is too pale on white, so
+     the light theme takes its accent a couple of steps darker. */
+  --color-accent: #6a5cc0;
+  --color-divider: color-mix(in srgb, #1b1d28 14%, transparent);
+
+  /* Neutral ramp, reversed: 100 stays "strongest", 900 stays "faintest". */
+  --color-neutral-100: #1d1f27;
+  --color-neutral-200: #2f3240;
+  --color-neutral-300: #454857;
+  --color-neutral-400: #5b5f70;
+  --color-neutral-500: #71758a;
+  --color-neutral-600: #878ba0;
+  --color-neutral-700: #9a9eb2;
+  --color-neutral-800: #cfd3e2;
+  --color-neutral-900: #e2e5f0;
+
+  /* Accent ramp, reversed the same way. */
+  --color-accent-100: #2b2741;
+  --color-accent-200: #423a6a;
+  --color-accent-300: #5d5294;
+  --color-accent-400: #796cbf;
+  --color-accent-500: #968ae0;
+  --color-accent-600: #b5abfc;
+  --color-accent-700: #d2cefd;
+  --color-accent-800: #e7e5fe;
+  --color-accent-900: #f5f4ff;
+
+  /* App surfaces. */
+  --color-panel: #ebedf6;
+  --color-glow: #ffffff;
+  --color-card: #ffffff;
+
+  /* Shadows carry the elevation on a light ground, so they lose the heavy
+     black and lean on the hairline ring instead. */
+  --shadow-md: 0 0 0 1px #d5d9e6, 0 6px 18px rgba(28,31,48,0.10);
+  --shadow-lg: 0 0 0 1px #c2c7d8, 0 16px 40px rgba(28,31,48,0.16);
+}

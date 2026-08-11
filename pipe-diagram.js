@@ -1,16 +1,39 @@
 // Live cross-section schematic drawn on a 2D canvas from the geometry result.
 
-const T = {
-  bg: '#1b1d2b',
-  wall: '#b2b6ca',
-  fill: '#2b2e3d',
-  bore: '#161826',
-  highlight: '#5d5294',   // section / bend highlight band
-  center: '#796cbf',
-  dim: '#75798c',
-  label: '#9397ab',
-  accent: '#b5abfc',
+// Canvas drawing can't read CSS variables, so the two themes are spelled out
+// here and swapped by setDiagramTheme (called from applyTheme in app.js).
+// `bore` is the hollow and reads as absence, so it sits past `bg` on the same
+// side as the theme's background: darker than everything in dark, lighter in
+// light. `fill` is the pipe wall and always sits on the other side.
+const THEMES = {
+  dark: {
+    bg: '#1b1d2b',
+    wall: '#b2b6ca',
+    fill: '#2b2e3d',
+    bore: '#161826',
+    highlight: '#5d5294',   // section / bend highlight band
+    center: '#796cbf',
+    dim: '#75798c',
+    label: '#9397ab',
+    accent: '#b5abfc',
+  },
+  light: {
+    bg: '#ffffff',
+    wall: '#4c5060',
+    fill: '#e6e9f4',
+    bore: '#fbfbfe',
+    highlight: '#ded9ff',
+    center: '#6f61c4',
+    dim: '#83879a',
+    label: '#5b5f70',
+    accent: '#5d5294',
+  },
 };
+let T = THEMES.dark;
+
+export function setDiagramTheme(name) {
+  T = THEMES[name] || THEMES.dark;
+}
 
 // `highlight` selects the hovered group to band: null, or { kind:'section'|'bend',
 // index } (an arclength span is derived from g.path). `view` is an optional

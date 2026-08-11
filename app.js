@@ -6,13 +6,14 @@
 
 import * as THREE from './vendor/three.module.js';
 import * as geo from './pipe-geometry.js';
-import { drawDiagram } from './pipe-diagram.js';
+import { drawDiagram, setDiagramTheme } from './pipe-diagram.js';
 
 // ── DOM references ──────────────────────────────────────────────────────────
 const el = {
   summary: document.getElementById('summary'),
-  layoutSwitch: document.getElementById('layout-switch'),
+  panelSide: document.getElementById('btn-panel-side'),
   unitsSwitch: document.getElementById('units-switch'),
+  theme: document.getElementById('btn-theme'),
   undo: document.getElementById('btn-undo'),
   redo: document.getElementById('btn-redo'),
   reset: document.getElementById('btn-reset'),
@@ -43,6 +44,8 @@ const state = {
   params: null,       // the clamped { sections, bends } model - single source of truth
   layout: 'left',     // 'left' | 'right' | 'bottom'
   units: 'mm',        // display units only - 'mm' | 'in'; geometry is always mm
+  theme: 'dark',      // 'dark' | 'light' - CSS tokens, schematic palette, and 3D backdrop
+                      // (set from the OS at boot; see osTheme)
 };
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
@@ -95,7 +98,8 @@ const VIEW_HOME = { az: -0.7, pol: 1.30 };   // default orbit angles (az ≈ −
 // two equal legs put the diagonal well outside `span`. That one still clears
 // the canvas edges and the schematic card here, so anything flatter does too.
 const FRAME_K = 1.45;
-let renderer, scene, camera, mesh, material, grid;
+let renderer, scene, camera, mesh, material, grid, hemiLight;
+let gridStep = 10, gridCells = 20;   // current floor-grid spacing, so a theme change can rebuild it
 let orbit = null;
 let fitK = 1;
 let span = 0;
@@ -122,6 +126,29 @@ const RENDER_STYLES = {
 };
 let renderStyle = 'steel';
 const surfaceCache = {};   // per-style { normalMap, roughnessMap, map }, built lazily
+
+// The parts of the 3D view that belong to the page rather than to the part:
+// the canvas backdrop, the floor grid, and the studio environment the materials
+// reflect. The materials themselves are the same in both themes - a copper pipe
+// is copper either way - but they need something bright to reflect on a light
+// page, or the metals read as dark holes cut out of the background.
+const SCENE_THEME = {
+  dark: {
+    clear: 0x191b28,
+    grid: [0x4a4e5e, 0x2c2f3b], gridOpacity: 0.45,
+    ground: 0x14151f,                                        // hemisphere light's lower half
+    sky: ['#3a3e52', '#222431', '#181a25', '#0e0f16'],       // environment gradient, top → floor
+  },
+  light: {
+    clear: 0xeceef6,
+    grid: [0x9297ab, 0xc3c7d6], gridOpacity: 0.75,
+    ground: 0xd6d9e6,
+    // Keeps the dark theme's top-to-floor falloff rather than washing the whole
+    // sphere white - a uniformly bright environment flattens the shading and
+    // the part loses its form against a light page.
+    sky: ['#ffffff', '#e4e8f4', '#c8cddf', '#8d92a6'],
+  },
+};
 
 // ── Parameters: hash serialization ──────────────────────────────────────────
 // The URL carries the whole chain, list-based so any number of sections works:
@@ -172,6 +199,9 @@ function writeHash(params) {
   if (renderStyle && renderStyle !== 'steel') s += '&render=' + renderStyle;
   // The display-unit choice rides along too (omitted when it's the default mm).
   if (state.units === 'in') s += '&units=in';
+  // The theme deliberately does NOT ride along: it's a preference about the
+  // room you're working in, not a property of the part, and a link shouldn't
+  // impose it on whoever opens it.
   // The expanded (diagram-swapped) state rides along, so a refreshed or copied
   // link opens with the cross-section already expanded.
   if (swapped) s += '&expanded=1';
@@ -1063,19 +1093,72 @@ function applyLayout() {
   // Minimize the docked cross-section diagram on the same breakpoint (CSS keys
   // the collapse off this class, so the two always happen together).
   el.viewer.classList.toggle('panel-below', lay === 'bottom');
-  // The panel is only forced below (there's no manual "below" option), so the
-  // left/right switcher is irrelevant then - hide it.
-  el.layoutSwitch.style.display = lay === 'bottom' ? 'none' : '';
-  // The mm/in toggle's tighter margins on narrow screens live in app.css (they
-  // track viewport width, not the stored layout, so CSS owns them).
-  el.layoutSwitch.querySelectorAll('button').forEach((btn) => {
-    const active = btn.getAttribute('data-layout') === lay;
-    btn.classList.toggle('btn-primary', active);
-    btn.classList.toggle('btn-ghost', !active);
-  });
+  // The side-swap arrow points at the side it would move the panel to, and sits
+  // on that side of the toolbar - so it always reads as "push the panel that
+  // way", and never sits between the two buttons it shares the bar with. (In
+  // the bottom layout the whole toolbar is hidden above, and there's no manual
+  // "below" option to swap to anyway.)
+  const toRight = lay !== 'right';
+  el.panelSide.textContent = toRight ? '→' : '←';
+  el.panelSide.style.order = toRight ? '1' : '-1';
+  const sideLabel = 'Move the panel to the ' + (toRight ? 'right' : 'left');
+  el.panelSide.title = sideLabel;
+  el.panelSide.setAttribute('aria-label', sideLabel);
   // A change in the effective layout (e.g. crossing the width threshold) reshapes
   // the viewer, so re-frame the part to fit it.
   if (lay !== appliedLayout) { appliedLayout = lay; framed = false; }
+}
+
+// Put the current theme on the page: the CSS tokens hang off data-theme, and
+// the pieces drawn outside CSS - the schematic's canvas palette, the viewer's
+// backdrop, floor grid and studio environment - are repainted to match. The
+// button always advertises the theme it would switch *to*.
+function applyTheme() {
+  const th = SCENE_THEME[state.theme] || SCENE_THEME.dark;
+  const toLight = state.theme === 'dark';
+  document.documentElement.setAttribute('data-theme', state.theme);
+  if (el.theme) {
+    const label = 'Switch to the ' + (toLight ? 'light' : 'dark') + ' theme';
+    el.theme.textContent = toLight ? '☀' : '☾';
+    el.theme.title = label;
+    el.theme.setAttribute('aria-label', label);
+  }
+  setDiagramTheme(state.theme);
+  if (renderer) {
+    renderer.setClearColor(th.clear, 1);
+    hemiLight.groundColor.setHex(th.ground);
+    if (scene.environment) scene.environment.dispose();
+    scene.environment = makeEnvironment();
+    makeGrid(gridStep, gridCells);   // grid colors are baked in, so rebuild it
+    draw();
+  }
+  drawSchematic();
+}
+
+// Nothing records the theme - it's not in the URL and the app has no storage -
+// so the starting point is the OS preference. `light` has to be asked for
+// explicitly; "no-preference" (and browsers that don't support the query at
+// all) keeps the app's dark default.
+const LIGHT_QUERY = '(prefers-color-scheme: light)';
+const osTheme = () => (window.matchMedia && window.matchMedia(LIGHT_QUERY).matches ? 'light' : 'dark');
+let themePinned = false;   // true once the button is used - a manual choice outranks the OS
+
+// Follow the OS if it changes mid-session (unplugging an external display, a
+// sunset schedule), but never over the top of a deliberate choice.
+function watchOSTheme() {
+  const mq = window.matchMedia && window.matchMedia(LIGHT_QUERY);
+  if (!mq || !mq.addEventListener) return;
+  mq.addEventListener('change', () => {
+    if (themePinned) return;
+    state.theme = osTheme();
+    applyTheme();
+  });
+}
+
+function setTheme(name) {
+  state.theme = name === 'light' ? 'light' : 'dark';
+  themePinned = true;
+  applyTheme();
 }
 
 function applyUnits() {
@@ -1306,11 +1389,12 @@ function makeEnvironment() {
   try {
     const c = document.createElement('canvas'); c.width = 512; c.height = 256;
     const ctx = c.getContext('2d');
+    const sky = (SCENE_THEME[state.theme] || SCENE_THEME.dark).sky;
     const g = ctx.createLinearGradient(0, 0, 0, c.height);
-    g.addColorStop(0.00, '#3a3e52');   // top - lighter "sky"
-    g.addColorStop(0.48, '#222431');
-    g.addColorStop(0.52, '#181a25');   // horizon
-    g.addColorStop(1.00, '#0e0f16');   // bottom - darker "floor"
+    g.addColorStop(0.00, sky[0]);   // top - lighter "sky"
+    g.addColorStop(0.48, sky[1]);
+    g.addColorStop(0.52, sky[2]);   // horizon
+    g.addColorStop(1.00, sky[3]);   // bottom - darker "floor"
     ctx.fillStyle = g; ctx.fillRect(0, 0, c.width, c.height);
     const blob = (x, y, r, col) => {
       const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
@@ -1347,20 +1431,36 @@ function setRenderStyle(name) {
   markActiveStyle();
 }
 
+// (Re)build the floor grid at `step` mm spacing over `cells` cells. A helper
+// bakes its colors into vertex data, so both a spacing change and a theme
+// change mean a fresh one.
+function makeGrid(step, cells) {
+  const th = SCENE_THEME[state.theme] || SCENE_THEME.dark;
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); }
+  gridStep = step; gridCells = cells;
+  grid = new THREE.GridHelper(step * cells, cells, th.grid[0], th.grid[1]);
+  grid.material.transparent = true;
+  grid.material.opacity = th.gridOpacity;
+  scene.add(grid);
+}
+
 function initThree() {
   const host = el.stage;
   if (!host) return;
 
+  const th = SCENE_THEME[state.theme] || SCENE_THEME.dark;
+
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-  renderer.setClearColor(0x191b28, 1);
+  renderer.setClearColor(th.clear, 1);
   host.appendChild(renderer.domElement);
   renderer.domElement.style.display = 'block';
 
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(38, 1, 0.5, 5000);
 
-  scene.add(new THREE.HemisphereLight(0xb9bdd4, 0x14151f, 0.55));
+  hemiLight = new THREE.HemisphereLight(0xb9bdd4, th.ground, 0.55);
+  scene.add(hemiLight);
   const key = new THREE.DirectionalLight(0xf1f2fa, 1.5);
   key.position.set(0.6, 1, 0.8);
   scene.add(key);
@@ -1377,10 +1477,7 @@ function initThree() {
   mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
   scene.add(mesh);
 
-  grid = new THREE.GridHelper(200, 20, 0x4a4e5e, 0x2c2f3b);
-  grid.material.transparent = true;
-  grid.material.opacity = 0.5;
-  scene.add(grid);
+  makeGrid(gridStep, gridCells);
 
   orbit = { az: VIEW_HOME.az, pol: VIEW_HOME.pol, dist: 140, target: new THREE.Vector3(0, 0, 0) };
 
@@ -1440,12 +1537,7 @@ function syncMesh(first) {
   const cells = Math.max(8, Math.ceil((span * 2) / stepMm));
   if (gridKey !== stepMm + ':' + cells) {
     gridKey = stepMm + ':' + cells;
-    scene.remove(grid);
-    grid.geometry.dispose();
-    grid = new THREE.GridHelper(stepMm * cells, cells, 0x4a4e5e, 0x2c2f3b);
-    grid.material.transparent = true;
-    grid.material.opacity = 0.45;
-    scene.add(grid);
+    makeGrid(stepMm, cells);
   }
   draw();
 }
@@ -1962,15 +2054,17 @@ function init() {
   state.params = readHash() || geo.defaultParams();
   renderStyle = readRenderStyle() || 'steel';
   state.units = readUnits();
+  state.theme = osTheme();
+  watchOSTheme();
+  applyTheme();   // before initThree, so the scene is built with the right backdrop
 
-  el.layoutSwitch.querySelectorAll('button').forEach((btn) => {
-    btn.addEventListener('click', () => setLayout(btn.getAttribute('data-layout')));
-  });
+  el.panelSide.addEventListener('click', () => setLayout(state.layout === 'right' ? 'left' : 'right'));
   el.unitsSwitch.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', () => setUnits(btn.getAttribute('data-units')));
   });
   el.collapseAll.addEventListener('click', () => setAllCollapsed(true));
   el.expandAll.addEventListener('click', () => setAllCollapsed(false));
+  el.theme.addEventListener('click', () => setTheme(state.theme === 'dark' ? 'light' : 'dark'));
   el.undo.addEventListener('click', () => step('undo'));
   el.redo.addEventListener('click', () => step('redo'));
   document.querySelectorAll('.menu-item[data-dl]').forEach((item) => {

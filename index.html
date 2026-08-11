@@ -8,6 +8,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23161826'/><path d='M2 6h5V4l3 4-3 4v-2H2zM14 10H9V8l-3-0' fill='none' stroke='%239184d9' stroke-width='1.4'/><rect x='2' y='6.5' width='5' height='3' fill='%239184d9'/><rect x='9' y='6.5' width='5' height='3' fill='%239184d9'/></svg>">
   <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="dark.css">
+  <link rel="stylesheet" href="light.css">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -19,11 +20,6 @@
           <span class="brand-sub">Parametric Designer for Connecting Two Tubes Together</span>
         </div>
         <span class="brand-summary" id="summary"></span>
-      </div>
-
-      <div class="layout-switch" id="layout-switch">
-        <button class="btn" type="button" data-layout="left">Panel left</button>
-        <button class="btn" type="button" data-layout="right">Panel right</button>
       </div>
 
       <div class="units-switch" id="units-switch" title="Display units — geometry is always stored in mm">
@@ -43,6 +39,7 @@
             <button class="menu-item" type="button" data-style="normals">Normals</button>
           </div>
         </div>
+        <button class="btn btn-secondary btn-theme btn-icon" type="button" id="btn-theme" title="Switch to the light theme" aria-label="Switch to the light theme">☀</button>
         <button class="btn btn-secondary btn-undo btn-icon" type="button" id="btn-undo" title="Undo (⌘Z)" aria-label="Undo">↺</button>
         <button class="btn btn-secondary btn-redo btn-icon" type="button" id="btn-redo" title="Redo (⇧⌘Z)" aria-label="Redo">↻</button>
         <div class="menu">
@@ -67,6 +64,10 @@
         <div class="panel-toolbar" id="panel-toolbar">
           <button class="btn btn-secondary" type="button" id="btn-collapse-all">Collapse All</button>
           <button class="btn btn-secondary" type="button" id="btn-expand-all">Expand All</button>
+          <!-- Moves the panel to the other side. Sits on the side it would move
+               toward, so it points away from the panel; applyLayout sets both
+               the glyph and which end of the bar it lands on. -->
+          <button class="btn btn-secondary panel-side" type="button" id="btn-panel-side">→</button>
         </div>
         <div class="panel-grid" id="panel-grid"></div>
       </aside>

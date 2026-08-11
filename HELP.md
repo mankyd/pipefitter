@@ -9,10 +9,13 @@ Section 3, and so on. The first and last section headers have a **+ Section** bu
 first prepends, the last appends, each copying the section it was created from), and a **✕** button to remove an end
 section. You can click on any section header to collapse it and make more room.
 
-## Sections
+## Straight Sections
 
 Each section controls one straight run of the pipe. Start by specifying the inner and outer diameters. Then specify the
 length. Use **Mimic Previous Section** / **Mimic Next Section** buttons to match a neighbor.
+
+
+### End Treatment
 
 Only the **first and last** sections have an **End Treatment** (the two open ends of the pipe):
 
@@ -22,29 +25,31 @@ Only the **first and last** sections have an **End Treatment** (the two open end
   of the pipe the chamfer should consume (**Y, radial**). A chamfer with 0 for all of its values is the same as a
   Plain end.
 - **Flange** adds a flat ring to the end of the pipe. You can specify how wide the ring is, how thick it is, and also
-  add holes symmetrically around the center of the ring.
+  add holes symmetrically around the center of the ring. The flange's thickness is included in the length of the
+  section.
 - **Hose Barb** adds a sharp saw-tooth shape to the end. You can control the height, spacing, and number of teeth to
   add.
 - **Teeth** are like small sections  of hose barb, spaced out evenly around the opening. They can be rounded over
   smooth. They are useful for soft hoses lined with coiled wire, providing something for the hose to grab or screw
   onto without damaging it. Such hoses should still be clamped.
-- **Slip Joint** makes a telescoping joint so two pipes slide together. Choose **Inside** for a spigot that plugs into
-  the mating pipe (its outer Ø is set to this section's inner Ø minus the tolerance), or **Outside** for a socket the
-  mate plugs into (its bore is set to this section's outer Ø plus the tolerance). The stub is included in the
-  section's length, so the section's length remains unchnaged. The two pipes bottom out against a flat shoulder, and a
-  lead-in chamfer (on the spigot's outer tip, or the socket's bore mouth) eases them together. Increase the
-  **tolerance** for a looser, easier slide; decrease it for a snugger fit.
+- **Slip Joint** makes a telescoping joint so two pipes slide together. Two opposing slip joints *do not* fit
+  together. A slip joint is meant to connect with a plain or chamfered pipe on the other side. Choose **Inside** 
+  for a spigot that plugs into the mating pipe (its outer Ø is set to this section's inner Ø minus the tolerance).
+  Choose **Outside** for a socket the mate plugs into (its bore is set to this section's outer Ø plus the tolerance).
+  The additional of a slip joint is *not* included in the length of the section. The length is measured to the 
+  shoulder of the joint. A lead-in chamfer (on the spigot's outer tip, or the socket's bore mouth) makes it easier to
+  slide the joint together. Increase the **tolerance** for a looser, easier slide; decrease it for a snugger fit.
 
 ## Bends
 
 Each bend joins two neighboring sections. Set its angle anywhere from −90° to 90° — the sign chooses which way it
 turns, so two bends with alternating signs make an S-shape. An angle of 0° is a straight transition. The **Length**
-option measures the bend's length when it is straight, but changes to measure the length along the outside of the inner
-bend once there is any angle. All bends share one plane.
+option measures the bend's length when it is straight, but changes to measure the arc length along the outside of the
+inner bend once there is any angle. All bends share one plane.
 
-An angled bend's face arc has a floor — the tightest bend its diameters and walls allow — and the control's range
-starts there. If growing a diameter later pushes the floor above a stored value, the bend is drawn at the floor
-instead: the control, the diagram, and a note in the header all show the raised value.
+The limits to the minimum arc length depending on if the thicknesses and diameters of all the adjoining sections.
+If all sections are equal in diameter and thickness, the arc length can be set below 1mm. As variations are 
+introduced, the arc length may increase.
 
 By default a bend blends the inner diameter and wall thickness **smoothly** from one neighboring section to the
 other. Turn off **Continuous Ø** or **Continuous thickness** to instead set a fixed value at the middle of the
@@ -60,3 +65,4 @@ first or last end, to make 3D printing easier, or downloaded as-is.
 ## Questions/Comments/Concerns?
 
 Reach out to Dave - mankyd@gmail.com
+

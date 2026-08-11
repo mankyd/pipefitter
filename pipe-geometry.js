@@ -434,18 +434,30 @@ function innerFaceLength(tr, A, R) {
   return len;
 }
 
-// Smallest R that keeps the concave face clear of the centerline. A flat 2%
-// margin lets the concave outer surface pass within 0.02·maxOuter of the pivot
-// on a big-Ø-ratio bend — a razor cusp the constant-thickness bore can't rescue
-// (it's the *outer* surface that's degenerate). Floor that clearance at a wall
-// thickness instead. (For a straight run there is no bend, so this is unused.)
+// Smallest R that keeps the concave face clear of the centerline. The hard limit
+// is R > maxOuter: at R = maxOuter the concave surface passes through the pivot
+// and the sweep degenerates (below it, the solid self-intersects). How much
+// clearance to hold above that depends on how the wall is built.
+// (For a straight run there is no bend, so this is unused.)
+const BEND_CLEARANCE = 0.02;      // × maxOuter — the razor-cusp margin
 function minBendRadius(tr) {
   let mx = 0;
   for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
-  // A reduction shouldered inside a bend pinches the concave wall the tighter the
-  // bend; keep the concave face a couple of wall thicknesses off the pivot so a
-  // shallow/moderate bend keeps full walls (a sharp bend still compresses some).
-  return mx + Math.max(2 * transitionMaxWall(tr), 0.02 * mx);
+  // A CONSTANT profile is swept from the exact radial profile (see profileAt):
+  // every station is a plain annulus, so the wall and bore hold their nominal
+  // thickness at any R > mx. Nothing needs rescuing, and the flat 2% margin —
+  // just enough to keep the concave face off the pivot — is the whole limit.
+  // That buys a corner radius of 2% of the outer radius: effectively a sharp
+  // elbow, which is the tightest this construction can be asked for.
+  if (!transitionVaries(tr)) return mx * (1 + BEND_CLEARANCE);
+  // A VARYING profile is meshed as a disc envelope instead, and a reduction
+  // shouldered inside a bend pinches the concave wall the tighter the bend. The
+  // 2% margin alone lets the outer surface graze the pivot in a razor cusp the
+  // constant-thickness bore can't rescue (it's the *outer* surface that's
+  // degenerate), so floor the clearance at a couple of wall thicknesses: a
+  // shallow/moderate bend then keeps full walls (a sharp bend still compresses
+  // some).
+  return mx + Math.max(2 * transitionMaxWall(tr), BEND_CLEARANCE * mx);
 }
 
 // The thinnest wall the transition carries, and its total outer-radius change.
@@ -1178,7 +1190,7 @@ export function build(raw, radialSegments) {
     // Only note a raise the 0.1 mm readouts can actually show; a request within
     // rounding of the floor (e.g. the slider parked on the floor itself) is met.
     if (b.bend && b.faceClamped && b.minFace - bends[i].l2 > 0.05) {
-      notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this diameter allows');
+      notes.push('Bend ' + (i + 1) + ' raised to ~' + (round(b.minFace, 1)) + ' mm — the tightest bend this profile allows');
     }
   }
 

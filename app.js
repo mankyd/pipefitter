@@ -111,6 +111,8 @@ let rafPending = false;
 let resizeObserver = null;
 let hasCustomView = false;   // once true, the camera pose is written to the URL (#view=...)
 let wheelTimer = null;       // debounce so zoom writes the URL only after scrolling stops
+let lastHash = null;         // the hash this page last wrote, so it can tell its own
+                             // writes from someone editing the address bar
 
 // Render styles for the 3D mesh, chosen from the topbar "Render" menu and kept
 // in the URL (#render=...). Most are PBR (color/metalness/roughness/env intensity,
@@ -208,7 +210,38 @@ function writeHash(params) {
   // The camera pose rides along as `view` once the user has moved it, so a link
   // reproduces both the part and the angle it's being viewed from.
   if (hasCustomView && orbit) s += '&view=' + serializeView();
-  try { window.history.replaceState(null, '', '#' + s); } catch (e) { /* sandboxed */ }
+  lastHash = '#' + s;
+  try { window.history.replaceState(null, '', lastHash); } catch (e) { /* sandboxed */ }
+}
+
+// ── URL → app (live) ────────────────────────────────────────────────────────
+// Editing the hash in the address bar, or going Back to an earlier one, should
+// show that pipe straight away rather than on the next refresh. replaceState
+// (how writeHash publishes state) never fires hashchange, so this only ever
+// hears about outside edits - `lastHash` is belt-and-braces for a browser that
+// fires one anyway, and for the sandboxed case where replaceState threw.
+function onHashChange() {
+  if ((window.location.hash || '') === lastHash) return;
+  const params = readHash() || geo.defaultParams();
+  const view = readView();
+  const expanded = readExpanded();
+
+  // A URL edit is a state change like any other, so it lands on the undo stack.
+  undoStack = undoStack.concat([state.params]).slice(-80);
+  redoStack = [];
+  lastKey = null;
+  state.params = params;
+  state.units = readUnits();
+  applyRenderStyle(readRenderStyle() || 'steel');
+  if (expanded !== swapped) applySwap(expanded);
+  // No `view` in the incoming URL means "however this part frames itself".
+  // Move the camera before republishing, so the hash we write back carries the
+  // pose that's actually on screen rather than the one we just left.
+  if (view) applyView(view);
+  else { hasCustomView = false; userView = false; framed = false; }
+
+  writeHash(params);   // re-publish canonically: defaults filled in, shape normalized
+  render();
 }
 // Render style ↔ URL (`render`), read back on load.
 function readRenderStyle() {
@@ -1488,9 +1521,15 @@ function markActiveStyle() {
     b.classList.toggle('is-active', b.getAttribute('data-style') === renderStyle));
 }
 function setRenderStyle(name) {
-  if (!RENDER_STYLES[name]) name = 'steel';
-  renderStyle = name;
+  applyRenderStyle(name);
   writeHash(state.params);   // record the choice in the URL (#render=...)
+}
+// The style swap itself, without touching the URL - shared by the menu and by
+// the URL-driven restore, which must not write the hash back mid-read.
+function applyRenderStyle(name) {
+  if (!RENDER_STYLES[name]) name = 'steel';
+  if (name === renderStyle && material) return;
+  renderStyle = name;
   if (mesh) {
     const old = mesh.material;
     mesh.material = makeMaterial(name);
@@ -2361,6 +2400,7 @@ function init() {
   window.addEventListener('keydown', onKey);
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.helpBackdrop.hidden) closeHelp(); });
   window.addEventListener('resize', onResize);
+  window.addEventListener('hashchange', onHashChange);
 
   initThree();
   render();

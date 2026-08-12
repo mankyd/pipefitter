@@ -396,6 +396,15 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   border: 1px solid var(--color-accent-800); border-radius: var(--radius-sm);
   padding: 4px 8px;
 }
+/* Only a note reporting something taken away carries a ✕ - a clamp note has no
+   business being dismissed, since its limit is still in force. */
+.note-dismissible { display: flex; align-items: flex-start; gap: 6px; }
+.note-close {
+  flex: none; margin: 0 -3px 0 0; padding: 0 3px;
+  background: none; border: 0; border-radius: var(--radius-sm);
+  color: inherit; font: inherit; line-height: inherit; opacity: 0.6; cursor: pointer;
+}
+.note-close:hover { opacity: 1; background: var(--color-accent-800); }
 .overlay-br {
   bottom: var(--space-6); right: var(--space-6);
   display: flex; flex-direction: row; align-items: flex-end; gap: var(--space-4);

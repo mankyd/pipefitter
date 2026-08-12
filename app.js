@@ -121,6 +121,12 @@ let hasCustomView = false;   // once true, the camera pose is written to the URL
 let wheelTimer = null;       // debounce so zoom writes the URL only after scrolling stops
 let lastHash = null;         // the hash this page last wrote, so it can tell its own
                              // writes from someone editing the address bar
+// Reports of a treatment a joint had to take away (see normalizeChain). Unlike
+// a clamp note, the built chain can't tell us about these - the pass that did
+// the removing is the only one that ever knows, and re-normalizing the repaired
+// params finds nothing left to say - so they are held here until the next edit
+// replaces them, or the reader dismisses them.
+let dropNotes = [];
 
 // Render styles for the 3D mesh, chosen from the topbar "Render" menu and kept
 // in the URL (#render=...). Most are PBR (color/metalness/roughness/env intensity,
@@ -212,7 +218,11 @@ function readHash() {
     }
     return { sections, bends };
   });
-  return geo.normalizeChain({ pipes }).p;
+  // A hand-written URL can ask for a joint to wear a treatment it can't, so
+  // this pass gets the same say as an edit does (see dropNotes).
+  const r = geo.normalizeChain({ pipes });
+  dropNotes = r.dropped;
+  return r.p;
 }
 
 function writeHash(params) {
@@ -336,7 +346,10 @@ function commitView() {
 // ── Undo / redo ─────────────────────────────────────────────────────────────
 // Consecutive changes to the same control within 600ms collapse into one entry,
 // so dragging a slider is a single undo step. Stack capped at 80.
-function commit(params, key) {
+// `result` is a whole geo.normalizeChain() return - the clamped params plus
+// anything that pass had to take away to get them (see dropNotes).
+function commit(result, key) {
+  const params = result.p;
   const now = Date.now();
   const coalesce = key && key === lastKey && now - lastT < 600;
   if (!coalesce) {
@@ -345,6 +358,7 @@ function commit(params, key) {
   }
   lastKey = key;
   lastT = now;
+  dropNotes = result.dropped;
   state.params = params;
   writeHash(params);
   render();
@@ -357,6 +371,7 @@ function step(dir) {
   from.pop();
   (dir === 'undo' ? redoStack : undoStack).push(state.params);
   lastKey = null;
+  dropNotes = [];   // whatever an earlier edit took away, this isn't that edit
   state.params = params;
   writeHash(params);
   render();
@@ -461,7 +476,7 @@ function set(key, raw) {
     const sec = next.pipes[k.pi].sections[k.i];
     sec[k.slot][sib] = clamp(round(sec.w - v, 2), 0, dragBase.pipes[k.pi].sections[k.i][k.slot][sib]);
   }
-  commit(geo.normalizeChain(next, driverOf(key)).p, key);
+  commit(geo.normalizeChain(next, driverOf(key)), key);
 }
 
 // Copy one section's full definition (diameter, wall, length, and any end
@@ -473,7 +488,7 @@ function copySection(pi, target, source) {
   if (!s || !t) return;
   t.id = s.id; t.w = s.w; t.l = s.l;
   for (const slot of geo.END_SLOTS) if (t[slot] && s[slot]) t[slot] = { ...s[slot] };
-  commit(geo.normalizeChain(p, { pi, si: target }).p, 'copy-' + pi + '-' + target);
+  commit(geo.normalizeChain(p, { pi, si: target }), 'copy-' + pi + '-' + target);
 }
 
 // Set a bend value (idm/w2) from its two neighboring sections' id/w:
@@ -484,7 +499,7 @@ function setBend(pi, bendIndex, leaf, secLeaf, mode) {
   const v = mode === 'left' ? a : mode === 'right' ? b : (a + b) / 2;
   const p = geo.cloneParams(state.params);
   p.pipes[pi].bends[bendIndex][leaf] = v;
-  commit(geo.normalizeChain(p).p, 'p' + pi + '.b' + bendIndex + '.' + leaf + '-' + mode);
+  commit(geo.normalizeChain(p), 'p' + pi + '.b' + bendIndex + '.' + leaf + '-' + mode);
 }
 
 // Structural edits within one pipe: splice its sections/bends, then re-home its
@@ -503,7 +518,7 @@ function structuralEdit(pi, mutate, driver) {
   for (const s of pp.sections) for (const slot of geo.END_SLOTS) delete s[slot];
   pp.sections[0].endA = endA || geo.defaultEnd();
   pp.sections[pp.sections.length - 1].endB = endB || geo.defaultEnd();
-  commit(geo.normalizeChain(p, driver).p, null);
+  commit(geo.normalizeChain(p, driver), null);
 }
 // A straight (0°) transition bend whose diameter/wall match a section.
 function bendFrom(sec) {
@@ -565,7 +580,16 @@ function removeSection(pi, i) {
 // A new pipe is a two-section stub copying the dimensions of the end it mates
 // with, joined by a straight transition - the same shape "+ Section" produces,
 // one level up. Its mating end is left to syncJoints, which gives it whatever
-// complements the end it was grown from; its free end starts plain.
+// complements the end it was grown from.
+//
+// Its FREE end inherits the treatment the old end was wearing. That end is the
+// assembly's interface with the outside world - the barb a hose pushes onto,
+// the flange that bolts to something - and growing the chain moves that
+// interface along rather than burying it in a joint. What happens to the end
+// left behind is syncJoints' business: it keeps its treatment when that can
+// carry a joint (a flange still bolts to a flange) and gives it up otherwise,
+// with the note that goes with losing it - the end really is plain now, even
+// though a copy of what it wore lives on at the far end of the new pipe.
 function addPipe(where) {
   const pipes = state.params.pipes;
   if (pipes.length >= geo.MAX_PIPES) return;
@@ -573,7 +597,12 @@ function addPipe(where) {
   const anchorIdx = after ? pipes.length - 1 : 0;
   const anchor = pipes[anchorIdx];
   const src = after ? anchor.sections[anchor.sections.length - 1] : anchor.sections[0];
-  const dims = (slot) => ({ id: src.id, w: src.w, l: src.l, [slot]: geo.defaultEnd() });
+  // Appending builds on the chain's far (endB) end and the new pipe's far end
+  // becomes the new one; prepending does the same at the near (endA) end. Either
+  // way the treatment lands in the slot it left.
+  const slot = after ? 'endB' : 'endA';
+  const carried = { ...src[slot] };
+  const dims = (s) => ({ id: src.id, w: src.w, l: src.l, [s]: s === slot ? carried : geo.defaultEnd() });
   const np = { sections: [dims('endA'), dims('endB')], bends: [bendFrom(src)] };
   const p = geo.cloneParams(state.params);
   if (after) {
@@ -589,7 +618,7 @@ function addPipe(where) {
   // The pipe that was already there owns the joint either way: appending flows
   // left to right by default, prepending has to be told (the existing pipe is
   // now pipe 1, and its FIRST end is the one that was clicked).
-  commit(geo.normalizeChain(p, after ? null : { pi: 1, si: 0 }).p, null);
+  commit(geo.normalizeChain(p, after ? null : { pi: 1, si: 0 }), null);
 }
 function removePipe(j) {
   if (state.params.pipes.length <= 1) return;
@@ -600,7 +629,7 @@ function removePipe(j) {
     if (g && g.pi === j) collapsedGroups.delete(id);
   }
   shiftCollapsedPipes(j + 1, -1);
-  commit(geo.normalizeChain(p).p, null);
+  commit(geo.normalizeChain(p), null);
 }
 
 function geometry() {
@@ -1266,6 +1295,22 @@ function h(tag, cls, attrs) {
   return node;
 }
 
+// One dismissible note. Closing it drops the text from `dropNotes` as well as
+// from the page - the list is re-read on every render, so pulling only the
+// element would put it straight back on the next resize or camera nudge.
+function dropNote(text) {
+  const div = h('div', 'note note-dismissible');
+  const span = h('span'); span.textContent = text;
+  const btn = h('button', 'note-close', { type: 'button', title: 'Dismiss', 'aria-label': 'Dismiss' });
+  btn.textContent = '✕';
+  btn.addEventListener('click', () => {
+    dropNotes = dropNotes.filter((n) => n !== text);
+    div.remove();
+  });
+  div.append(span, btn);
+  return div;
+}
+
 // A collapsing header row: the caret/tag/title toggle plus its trailing
 // buttons. `node` is the element whose `collapsed` class the toggle drives, so
 // the same row serves a single group card and a whole pipe block.
@@ -1646,8 +1691,13 @@ function render() {
       dv(g.bbox.size[0]) + ' × ' + dv(g.bbox.size[1]) + ' × ' + dv(g.bbox.size[2]) + ' ' + uSuf;
     el.mesh.textContent = g.triCount.toLocaleString() + ' facets in preview · 160-segment export';
 
-    // clamp notes
+    // What was taken away first, then what is still being held back. Only the
+    // first kind closes: it reports a one-off act rather than a live limit, so
+    // there is nothing to come back to once it has been read. A clamp note has
+    // no ✕ because dismissing it would be a lie - the limit is still there, and
+    // the next render would say so again.
     el.notes.replaceChildren();
+    for (const n of dropNotes) el.notes.append(dropNote(n));
     for (const n of g.notes) {
       const div = h('div', 'note'); div.textContent = n;
       el.notes.append(div);

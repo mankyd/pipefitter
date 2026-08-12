@@ -16,12 +16,16 @@ minute rather than a full CAD session.
 
 - **Any number of sections** — from a single straight run upward — each with its own
   inner diameter, wall thickness, and length, joined by planar bends of up to 90 degrees.
-- **End treatments** on the pipe's two open ends: plain, chamfer, flange (with bolt
+- **End treatments** on each pipe's two open ends: plain, chamfer, flange (with bolt
   holes), hose barb, teeth, and a slip joint for sliding two pipes together. A lone
   section carries both of them, one per side.
+- **Up to four separate pipes** joined end to end by a flange, slip joint, or butt joint,
+  shown assembled. Each joint keeps its two mating ends in agreement — diameters, and a
+  flange's bolt pattern — while leaving each part its own wall thickness and tolerance.
 - **Live 3D preview** (orbit / pan / zoom, multiple render styles) and a **live 2D
   cross-section** with dimensions.
-- **Export** to binary STL or 3MF, optionally oriented to sit flat on an end face.
+- **Export** to binary STL or 3MF, optionally oriented to sit flat on an end face. A
+  multi-pipe design exports as a ZIP of one STL per part, or a single multi-object 3MF.
 - **Everything lives in the URL** — the full design, display units (mm/in), render
   style, camera pose, and panel state — so the URL reproduces exactly what you see.
 

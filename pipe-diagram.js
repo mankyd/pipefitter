@@ -35,16 +35,28 @@ export function setDiagramTheme(name) {
   T = THEMES[name] || THEMES.dark;
 }
 
-// `highlight` selects the hovered group to band: null, or { kind:'section'|'bend',
-// index } (an arclength span is derived from g.path). `view` is an optional
-// user zoom/pan applied on top of the base fit: { zoom, panX, panY } in screen
-// (CSS px) space, defaulting to identity - the drawing keeps its correct aspect
-// ratio at every zoom because the base fit uses a single uniform scale. Returns
-// { leftX, leftTopY } - the screen position (CSS px, canvas-relative) of the
-// pipe's left edge and the top of its left end, so callers can line an overlay
-// up with the drawing.
-export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
-  if (!canvas || !g) return null;
+// `chain` is the buildChain result: { pipes: [...] }, every pipe already in
+// assembly coordinates, so the whole set shares one fit and one transform.
+// `highlight` selects the hovered group to band: null, or { pipe, kind:'pipe'|
+// 'section'|'bend', index } (an arclength span is derived from that pipe's
+// path). `view` is an optional user zoom/pan applied on top of the base fit:
+// { zoom, panX, panY } in screen (CSS px) space, defaulting to identity - the
+// drawing keeps its correct aspect ratio at every zoom because the base fit
+// uses a single uniform scale. `onlyPipe` draws a single pipe of the chain by
+// index, so one part can be read on its own; null or undefined draws them all.
+// Returns { leftX, leftTopY } - the screen position (CSS px, canvas-relative)
+// of the drawing's left edge and the top of its first pipe's left end, so
+// callers can line an overlay up with it.
+export function drawDiagram(canvas, chain, highlight, bottomInset, units, view, onlyPipe) {
+  if (!canvas || !chain || !chain.pipes || !chain.pipes.length) return null;
+  // Each entry keeps the pipe's index in the whole chain, so a part drawn on
+  // its own is still labelled by which pipe it actually is.
+  const all = chain.pipes
+    .map((g, i) => ({ g, i }))
+    .filter((p) => onlyPipe == null || p.i === onlyPipe);
+  if (!all.length) return null;
+  const nPipes = chain.pipes.length;
+  const g = all[0].g;
   // Dimension labels are converted for display only; the geometry is always mm.
   const inMode = units === 'in';
   const nv = (mm) => inMode ? (Math.round((mm / 25.4) * 1000) / 1000) : mm;   // number in the active unit
@@ -60,11 +72,14 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   ctx.fillStyle = T.bg;
   ctx.fillRect(0, 0, w, h);
 
-  const pts = [...g.silhouette.outer.top, ...g.silhouette.outer.bot];
+  // Fit the whole chain at once, so the parts keep their relative size and the
+  // joints read as joints rather than as two separately-scaled drawings.
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const q of pts) {
-    if (q[0] < minX) minX = q[0]; if (q[0] > maxX) maxX = q[0];
-    if (q[1] < minY) minY = q[1]; if (q[1] > maxY) maxY = q[1];
+  for (const { g: gp } of all) {
+    for (const q of [...gp.silhouette.outer.top, ...gp.silhouette.outer.bot]) {
+      if (q[0] < minX) minX = q[0]; if (q[0] > maxX) maxX = q[0];
+      if (q[1] < minY) minY = q[1]; if (q[1] > maxY) maxY = q[1];
+    }
   }
   // Fit to the pipe alone. The bend center is deliberately excluded - at
   // shallow angles it is hundreds of mm away and would shrink the part to a
@@ -86,47 +101,73 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   const Y = (y) => panY + zoom * (oy - y * k);
   const kz = k * zoom;   // effective world→screen scale, for screen-px margins
 
+  const trace = (list) => {
+    list.forEach((q, i) => (i ? ctx.lineTo(X(q[0]), Y(q[1])) : ctx.moveTo(X(q[0]), Y(q[1]))));
+  };
   const poly = (list, close) => {
     ctx.beginPath();
-    list.forEach((q, i) => (i ? ctx.lineTo(X(q[0]), Y(q[1])) : ctx.moveTo(X(q[0]), Y(q[1]))));
+    trace(list);
     if (close) ctx.closePath();
   };
 
-  // Solid wall body: outer silhouette, bore knocked out, outlines stroked.
-  const outerLoop = [...g.silhouette.outer.top, ...[...g.silhouette.outer.bot].reverse()];
-  const innerLoop = [...g.silhouette.inner.top, ...[...g.silhouette.inner.bot].reverse()];
+  // Solid wall bodies. Every part is drawn before any dimension is, so one
+  // pipe's body can't paint over its neighbour's labels.
+  //
+  // A joint puts one pipe INSIDE another - a spigot down its mate's bore, or a
+  // socket's collar around its mate's end - so the parts have to be layered by
+  // what they are rather than by which pipe they belong to. Hollow first for
+  // every pipe, then solid for every pipe: a bore is a hole, and anything that
+  // reaches into it is material seen through that hole, so it has to sit on
+  // top. Drawing each pipe complete in turn would let the later one's bore
+  // paint out the end of the pipe plugged into it.
+  const loops = all.map(({ g: gp }) => ({
+    outer: [...gp.silhouette.outer.top, ...[...gp.silhouette.outer.bot].reverse()],
+    inner: [...gp.silhouette.inner.top, ...[...gp.silhouette.inner.bot].reverse()],
+  }));
 
-  poly(outerLoop, true);
-  ctx.fillStyle = T.fill;
-  ctx.fill();
-  ctx.strokeStyle = T.wall;
-  ctx.lineWidth = 1.25;
-  ctx.stroke();
-
-  poly(innerLoop, true);
   ctx.fillStyle = T.bore;
-  ctx.fill();
-  ctx.strokeStyle = T.wall;
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  for (const lp of loops) { poly(lp.inner, true); ctx.fill(); }
 
-  // Section highlight (hover-driven). `highlight` is { kind, index } naming a
-  // section or bend - a translucent band over that segment, expanded a little
-  // beyond the pipe - or falsy for no highlight. Building it from the segment's
-  // outer silhouette offset along its own outward normal handles straight,
-  // tapered, and bent sections uniformly. Drawn over the cross-section so it
-  // reads as a highlight; centerline and dimensions stay crisp on top.
+  // The wall alone - the outer silhouette with the bore knocked out (even-odd),
+  // so filling it can never cover what is inside the hollow.
+  ctx.fillStyle = T.fill;
+  for (const lp of loops) {
+    ctx.beginPath();
+    trace(lp.outer); ctx.closePath();
+    trace(lp.inner); ctx.closePath();
+    ctx.fill('evenodd');
+  }
+
+  ctx.strokeStyle = T.wall;
+  for (const lp of loops) {
+    ctx.lineWidth = 1.25;
+    poly(lp.outer, true); ctx.stroke();
+    ctx.lineWidth = 1;
+    poly(lp.inner, true); ctx.stroke();
+  }
+
+  // Section highlight (hover-driven). `highlight` is { pipe, kind, index }
+  // naming a section, a bend, or a whole pipe - a translucent band over that
+  // segment, expanded a little beyond the pipe - or falsy for no highlight.
+  // Building it from the segment's outer silhouette offset along its own
+  // outward normal handles straight, tapered, and bent sections uniformly.
+  // Drawn over the cross-section so it reads as a highlight; centerline and
+  // dimensions stay crisp on top.
   if (highlight) {
-    const src = highlight.kind === 'bend' ? g.path.bends[highlight.index] : g.path.sections[highlight.index];
+    const found = all.find((p) => p.i === (highlight.pipe || 0));
+    const gp = found && found.g;
+    const src = gp && (highlight.kind === 'bend' ? gp.path.bends[highlight.index]
+      : highlight.kind === 'pipe' ? { sStart: 0, sEnd: gp.path.total }
+        : gp.path.sections[highlight.index]);
     const span = src ? [src.sStart, src.sEnd] : null;
-    const sO = g.silhouette.outer.s;
+    const sO = gp ? gp.silhouette.outer.s : [];
     const idx = [];
     if (span) for (let i = 0; i < sO.length; i++) if (sO[i] >= span[0] - 1e-6 && sO[i] <= span[1] + 1e-6) idx.push(i);
     if (idx.length > 1) {
       const mWorld = 9 / kz; // margin beyond the pipe, world units (≈9 screen px)
       const topB = [], botB = [];
       for (const i of idx) {
-        const t = g.silhouette.outer.top[i], b = g.silhouette.outer.bot[i];
+        const t = gp.silhouette.outer.top[i], b = gp.silhouette.outer.bot[i];
         let nx = t[0] - b[0], ny = t[1] - b[1];
         const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl; // outward, toward the 'top' side
         topB.push([t[0] + mWorld * nx, t[1] + mWorld * ny]);
@@ -146,8 +187,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   ctx.setLineDash([6, 4, 2, 4]);
   ctx.strokeStyle = T.center;
   ctx.lineWidth = 1;
-  poly(g.silhouette.center, false);
-  ctx.stroke();
+  for (const { g: gp } of all) { poly(gp.silhouette.center, false); ctx.stroke(); }
   ctx.restore();
 
   ctx.font = '500 10px Inter, system-ui, sans-serif';
@@ -182,8 +222,19 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
     ctx.restore();
   };
 
-  const baseY = Y(minY) + 24;
-  const anyBend = g.path.bend;   // any bent segment present → parts run off-axis
+  // Is the drawing axis-aligned? Only then can dimensions be measured against a
+  // shared horizontal base line. A bend tilts a pipe, but so does its PLACEMENT
+  // in the chain - a perfectly straight pipe is still drawn at an angle when the
+  // part before it turns - so ask the sections which way they actually run
+  // rather than inferring it from the bends.
+  const offAxis = all.some(({ g: gp }) => gp.path.bend
+    || gp.path.sections.some((sec) => Math.abs(sec.t[1]) > 1e-6));
+  // Dimensions belong to a pipe once there is more than one to tell apart.
+  const partTag = (pi, t) => (nPipes > 1 ? 'P' + (pi + 1) + '·' + t : t);
+  // Straight chains measure against a base line under the drawing. Two pipes
+  // laid end to end would stack their ticks on the same line — and largely on
+  // the same span — so each pipe gets a row of its own.
+  const rowY = (pj) => Y(minY) + 24 + pj * 18;
 
   // Bore-diameter tick across a section at its own midpoint (constant Ø within a
   // straight section, so the midpoint reads cleanly).
@@ -194,10 +245,12 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
   };
   // Length tick along a section's own axis, offset outward (toward −v) so it
   // clears the wall. With no bends at all, parts lie on x, so use the base line.
-  const lengthTick = (sec, label) => {
-    // lStart/lEnd (and lp0/lp1) span the section body only — a slip joint's
-    // extension past the free end isn't part of the section's length.
-    if (!anyBend) { tick(X(sec.lStart), baseY, X(sec.lEnd), baseY, label); return; }
+  const lengthTick = (sec, label, base) => {
+    // lp0/lp1 span the section body only — a slip joint's extension past the
+    // free end isn't part of the section's length. They are points in assembly
+    // space, which is what the base line has to be measured against: arclength
+    // only doubles as an x coordinate for a lone pipe standing at the origin.
+    if (!offAxis) { tick(X(sec.lp0[0]), base, X(sec.lp1[0]), base, label); return; }
     const v = [sec.t[1], -sec.t[0]];
     const off = sec.od / 2 + 6;
     tick(
@@ -207,13 +260,6 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
     );
   };
 
-  // Sections: one length tick + one bore-diameter tick each.
-  g.path.sections.forEach((sec, i) => {
-    lengthTick(sec, 'S' + (i + 1) + ' ' + nv(sec.l) + uu);
-    boreTick(sec, 'ø' + nv(sec.id));
-  });
-
-  const sArr = g.silhouette.outer.s;
   const boxLabel = (x, y, text, color, font) => {
     ctx.save();
     ctx.font = font || '500 10px Inter, system-ui, sans-serif';
@@ -227,12 +273,22 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
     ctx.restore();
   };
 
+  for (let pj = 0; pj < all.length; pj++) {
+  const { g: gp, i: pi } = all[pj];
+  const sArr = gp.silhouette.outer.s;
+
+  // Sections: one length tick + one bore-diameter tick each.
+  gp.path.sections.forEach((sec, i) => {
+    lengthTick(sec, partTag(pi, 'S' + (i + 1)) + ' ' + nv(sec.l) + uu, rowY(pj));
+    boreTick(sec, 'ø' + nv(sec.id));
+  });
+
   // Bends: curved ones trace the inner-face arc (that IS dimension B) with radial
   // lines to their own center and an angle readout; straight ones (0 deg) get a
   // plain length tick. A fixed (non-continuous) middle diameter draws a bore tick
   // at its midpoint.
-  g.path.bends.forEach((bd, i) => {
-    const tag = 'B' + (i + 1);
+  gp.path.bends.forEach((bd, i) => {
+    const tag = partTag(pi, 'B' + (i + 1));
     if (bd.bend) {
       const c = bd.center;
       const idx = [];
@@ -241,7 +297,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
       // the silhouette edge nearer the bend center. Which of top/bot that is
       // depends on the turn direction, so choose by distance to the center.
       const midIdx = idx[Math.floor(idx.length / 2)];
-      const oTop = g.silhouette.outer.top, oBot = g.silhouette.outer.bot;
+      const oTop = gp.silhouette.outer.top, oBot = gp.silhouette.outer.bot;
       const d2c = (q) => (q[0] - c[0]) * (q[0] - c[0]) + (q[1] - c[1]) * (q[1] - c[1]);
       const innerArr = (midIdx !== undefined && d2c(oBot[midIdx]) <= d2c(oTop[midIdx])) ? oBot : oTop;
       const outerArr = innerArr === oBot ? oTop : oBot;
@@ -295,7 +351,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
       // length actually drawn (rounded to a tenth) — the reducer may have been
       // lengthened past the requested l2 to keep its wall thick, and l2 can be 0.
       const len = Math.round(bd.arcLen * 10) / 10;
-      if (!anyBend) tick(X(bd.sStart), baseY, X(bd.sEnd), baseY, tag + ' ' + nv(len) + uu);
+      if (!offAxis) tick(X(bd.p0[0]), rowY(pj), X(bd.p1[0]), rowY(pj), tag + ' ' + nv(len) + uu);
       else {
         const v = [bd.t0[1], -bd.t0[0]], off = 10;
         tick(X(bd.p0[0] - v[0] * off), Y(bd.p0[1] - v[1] * off), X(bd.p1[0] - v[0] * off), Y(bd.p1[1] - v[1] * off), tag + ' ' + nv(len) + uu);
@@ -311,7 +367,7 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
     // there. A middle Ø that just passes through between the two ends has no
     // extremum of its own — mark the midpoint, as before.
     if (!bd.idmSmooth && bd.arcLen > 0) {
-      const iS = g.silhouette.inner.s, iT = g.silhouette.inner.top, iB = g.silhouette.inner.bot;
+      const iS = gp.silhouette.inner.s, iT = gp.silhouette.inner.top, iB = gp.silhouette.inner.bot;
       const spanAt = (k) => Math.hypot(iT[k][0] - iB[k][0], iT[k][1] - iB[k][1]);
       const inBend = [];
       for (let k = 0; k < iS.length; k++) if (iS[k] >= bd.sStart - 1e-6 && iS[k] <= bd.sEnd + 1e-6) inBend.push(k);
@@ -336,9 +392,11 @@ export function drawDiagram(canvas, g, highlight, bottomInset, units, view) {
       tick(X(mt[0]), Y(mt[1]), X(mb[0]), Y(mb[1]), 'ø' + nv(Math.round(dia * 10) / 10));
     }
   });
+  }
 
   // 'top'/'bot' are the two surfaces, not necessarily the visual top - take the
-  // one higher on screen (Y is flipped, so smaller Y is higher).
+  // one higher on screen (Y is flipped, so smaller Y is higher). The first pipe
+  // owns the chain's left end, so its end face is the one to line up with.
   const oT = g.silhouette.outer.top[0], oB = g.silhouette.outer.bot[0];
   return { leftX: X(minX), leftTopY: Math.min(Y(oT[1]), Y(oB[1])) };
 }

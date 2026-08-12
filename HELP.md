@@ -75,16 +75,20 @@ halves need to bolt together. Use the **+ Pipe ↑** / **+ Pipe ↓** buttons on
 new pipe onto the free end of the chain, up to four in all. The **✕** on a pipe header removes it; only the pipes at
 either end of the chain can be removed. Clicking a header collapses the pipe's controls, to keep the panel manageable.
 
-A new pipe starts as two sections copying the end it spawned from, with a straight transition between them. It is a
-**separate part**: it is meshed, oriented, and exported on its own. The 3D view and the cross section show the chain
-assembled so you can see how the parts meet.
+A new pipe starts as two sections copying the end it spawned from, with a straight transition between them. Its own
+open end inherits that end's **treatment**, so the chain grows without losing the face it presents to the world - add
+a pipe to a barbed end and the barb is on the new pipe's open end, ready for the same hose. It is a **separate part**:
+it is meshed, oriented, and exported on its own. The 3D view and the cross section show the chain assembled so you can
+see how the parts meet.
 
 ### The Joint
 
 The two ends that meet are kept in agreement; changes to one end's diameter are reflected in the other. End treatments
 must complement each other, so a mated end can be one of **Plain**, **Chamfer**, **Flange**, or **Slip Joint** - hose
 barbs and teeth are not available at joints. Changing one side changes the other to suit: pick Flange and the mate 
-becomes a flange, pick Slip Joint and the mate becomes a chamfer the stub to slide into.
+becomes a flange, pick Slip Joint and the mate becomes a chamfer the stub to slide into. An end that had hose barbs
+or teeth when a pipe was joined onto it is made plain, since there is nothing on the other side that can connect to
+it.
 
 Across every joint, the two mating sections **share their inner and outer diameter** - change either one and the
 other follows. Their *lengths* stay independent. Beyond that:

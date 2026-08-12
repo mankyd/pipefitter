@@ -252,16 +252,18 @@ export function normalize(raw) {
   return { p: { sections, bends }, notes };
 }
 
+// How a note names one end: its 1-based section number, and which side of that
+// section when it carries a treatment at each end and the two need telling apart.
+const endLabel = (sec, slot, index) => 'Section ' + (index + 1) +
+  (endsOf(sec).length > 1 ? (slot === 'endA' ? ' left end' : ' right end') : '');
+
 // An end feature must fit inside the straight length its section affords it —
 // the whole section, or half of it when that section carries both treatments.
-// Mutates sec[slot] and appends any pull-back notes (labeled by 1-based section
-// index, and by side when the section has two ends to tell apart).
+// Mutates sec[slot] and appends any pull-back notes (labeled by endLabel).
 function fitEnd(sec, slot, index, notes) {
   const e = sec[slot];
   if (!e) return;
-  const nEnds = endsOf(sec).length;
-  const label = 'Section ' + (index + 1) +
-    (nEnds > 1 ? (slot === 'endA' ? ' left end' : ' right end') : '');
+  const label = endLabel(sec, slot, index);
   const secLen = endAvail(sec), wall = sec.w;
   if (e.type === 'chamfer') {
     const maxX = secLen;   // an along-axis chamfer can span the whole run it's given
@@ -365,8 +367,8 @@ export function mateableEnds(a, b) {
 // section's `endA`). A single-section pipe answers both from the one section,
 // which is exactly why it can sit between two joints.
 const mateSide = (pipe, side) => (side === 'l'
-  ? { sec: pipe.sections[pipe.sections.length - 1], slot: 'endB' }
-  : { sec: pipe.sections[0], slot: 'endA' });
+  ? { sec: pipe.sections[pipe.sections.length - 1], slot: 'endB', i: pipe.sections.length - 1 }
+  : { sec: pipe.sections[0], slot: 'endA', i: 0 });
 const endAt = (m) => m.sec[m.slot];
 
 // The axial distance the two pipes overlap at a joint: a slip joint's stub
@@ -381,16 +383,33 @@ function jointStub(pipeL, pipeR) {
   return 0;
 }
 
+// What a treatment that can't carry a joint is called in the note that says so.
+const NON_MATING_NAMES = { barb: 'hose barb', teeth: 'teeth' };
+
 // Force one joint's two sides into agreement, copying from `src` to `dst`
-// (each a { sec, slot } from mateSide).
-function syncJoint(src, dst) {
+// (each a { sec, slot, i } from mateSide). `onDrop(side, type)` is called for
+// an end that had to give up a treatment it can't wear at a joint - that one is
+// worth telling about, since no other joint rule takes a feature away outright.
+// Retyping between mating treatments stays silent: the far side following the
+// near one is the whole point of a joint.
+function syncJoint(src, dst, onDrop) {
   dst.sec.id = src.sec.id;
   dst.sec.w = src.sec.w;
   const se = endAt(src), de = endAt(dst);
   if (!se || !de) return;
+  // Only a treatment with an opposite number can carry a joint, so a hose barb
+  // or a set of teeth - grown while this end was still free, then joined onto -
+  // gives way to a plain face. Nothing on the far side could have met it, and
+  // the menu stops offering either one once the end is mated.
+  if (!MATE_TYPES.includes(se.type)) { onDrop(src, se.type); se.type = 'plain'; }
   // The far side follows the near side's type, unless the pair is already legal
   // (a chamfer facing a slip joint - the stub simply lives on the other pipe).
-  if (!mateableEnds(se.type, de.type)) de.type = MATE_OF[se.type] || 'plain';
+  // It can be wearing an unmateable treatment too - the flow simply reached this
+  // joint from the other direction - and losing that is just as worth saying.
+  if (!mateableEnds(se.type, de.type)) {
+    if (!MATE_TYPES.includes(de.type)) onDrop(dst, de.type);
+    de.type = MATE_OF[se.type] || 'plain';
+  }
   for (const k of (MATE_END_KEYS[se.type] || [])) {
     if (de.type === se.type) de[k] = se[k];
   }
@@ -431,10 +450,13 @@ function capEngagement(pipes, j) {
 // The sweeps below therefore run outward from the driven joint - back through
 // any lone sections it passes through, forward everywhere else - so no joint
 // ever undoes one already settled, and a single pass still does it.
-function syncJoints(pipes, driver) {
+function syncJoints(pipes, driver, dropped) {
   const doJoint = (j, fromRight) => {
     const a = mateSide(pipes[j], 'l'), b = mateSide(pipes[j + 1], 'r');
-    if (fromRight) syncJoint(b, a); else syncJoint(a, b);
+    a.pi = j; b.pi = j + 1;   // each side knows its own pipe, so a note can name it
+    const drop = (m, type) => dropped.push(pipeNote(m.pi, pipes.length,
+      endLabel(m.sec, m.slot, m.i) + ' ' + (NON_MATING_NAMES[type] || type) + ' removed'));
+    if (fromRight) syncJoint(b, a, drop); else syncJoint(a, b, drop);
     capEngagement(pipes, j);
   };
   // Editing a pipe's first section drives the joint on its left from the right.
@@ -454,16 +476,22 @@ const pipeNote = (j, n, note) => (n > 1 ? 'Pipe ' + (j + 1) + ' · ' + note : no
 // again so a value pushed across a joint lands inside its own pipe's limits.
 // The second pass is stable - every synced quantity is clamped from synced
 // inputs alone, so both sides of a joint arrive at the same answer.
+//
+// `notes` and `dropped` are kept apart because they are different kinds of
+// thing. A note is a standing complaint: the value is still being held back,
+// and re-normalizing says it again. A `dropped` entry reports a treatment taken
+// away for good - said once, by the pass that did it, and never again. Only the
+// second kind is worth letting the reader dismiss.
 export function normalizeChain(raw, driver) {
   const pipes = asChain(raw).slice(0, MAX_PIPES).map((pp) => normalize(pp).p);
-  syncJoints(pipes, driver);
-  const notes = [];
+  const notes = [], dropped = [];
+  syncJoints(pipes, driver, dropped);
   const out = pipes.map((pp, j) => {
     const r = normalize(pp);
     for (const n of r.notes) notes.push(pipeNote(j, pipes.length, n));
     return r.p;
   });
-  return { p: { pipes: out }, notes };
+  return { p: { pipes: out }, notes, dropped };
 }
 
 // The diameter/wall transition a bend owns, resolved between its two neighbors.

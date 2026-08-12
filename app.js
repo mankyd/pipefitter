@@ -154,10 +154,11 @@ const SCENE_THEME = {
 // The URL carries the whole chain, list-based so any number of sections works:
 //   #s=<sec>|<sec>|...&b=<bend>|<bend>|...&e0=<end>&eN=<end>
 // A section is `id~w~l`; a bend is `ang~l2~idm~w2~idmSmooth~w2Smooth`; both use
-// `~` between fields and `|` between entries. The two end treatments (first and
-// last section) ride in `e0` / `eN` as `type~p1~p2...`, carrying only the params
-// that treatment uses. Missing values fall back to defaults; the shape is
-// re-normalized on load (≥2 sections, exactly N-1 bends).
+// `~` between fields and `|` between entries. The two end treatments ride in
+// `e0` / `eN` as `type~p1~p2...`, carrying only the params that treatment uses;
+// they land on the first and last sections (the same section when there is only
+// one). Missing values fall back to defaults; the shape is re-normalized on
+// load (≥1 section, exactly N-1 bends).
 
 const encodeEnd = (end) => [end.type, ...(END_TREATMENT_KEYS[end.type] || []).map((suf) => end[suf])].join('~');
 function decodeEnd(token) {
@@ -182,8 +183,8 @@ function readHash() {
   });
   if (sections.length >= 1) {
     const e0 = hashParam('e0'), eN = hashParam('eN');
-    sections[0].end = decodeEnd(e0);
-    sections[sections.length - 1].end = decodeEnd(eN);
+    sections[0].endA = decodeEnd(e0);
+    sections[sections.length - 1].endB = decodeEnd(eN);
   }
   return geo.normalize({ sections, bends }).p;
 }
@@ -193,7 +194,7 @@ function writeHash(params) {
   const sPart = secs.map((sc) => [sc.id, sc.w, sc.l].join('~')).join('|');
   const bPart = params.bends.map((bd) => [bd.ang, bd.l2, bd.idm, bd.w2, bd.idmSmooth, bd.w2Smooth].join('~')).join('|');
   let s = 's=' + sPart + '&b=' + bPart +
-    '&e0=' + encodeEnd(secs[0].end) + '&eN=' + encodeEnd(secs[secs.length - 1].end);
+    '&e0=' + encodeEnd(secs[0].endA) + '&eN=' + encodeEnd(secs[secs.length - 1].endB);
   // The chosen render style rides along too (omitted when it's the default), so
   // the whole viewing state lives in the URL - no cookies or localStorage.
   if (renderStyle && renderStyle !== 'steel') s += '&render=' + renderStyle;
@@ -308,7 +309,8 @@ function onKey(e) {
 // Every editable value has a string key encoding its location in the array
 // model, so undo-coalescing and DOM lookups stay key-based:
 //   s<i>.id | s<i>.w | s<i>.l          section dimensions
-//   s<i>.end.type | s<i>.end.<suf>     first/last end treatment
+//   s<i>.endA.type | s<i>.endA.<suf>   left end treatment (first section)
+//   s<i>.endB.type | s<i>.endB.<suf>   right end treatment (last section)
 //   b<i>.ang | b<i>.l2 | b<i>.idm | b<i>.w2 | b<i>.idmSmooth | b<i>.w2Smooth
 const END_TREATMENT_KEYS = {
   plain: [],
@@ -321,26 +323,26 @@ const END_TREATMENT_KEYS = {
 
 function parseKey(key) {
   let m;
-  if ((m = /^s(\d+)\.end\.(.+)$/.exec(key))) return { kind: 'end', i: +m[1], leaf: m[2] };
+  if ((m = /^s(\d+)\.(endA|endB)\.(.+)$/.exec(key))) return { kind: 'end', i: +m[1], slot: m[2], leaf: m[3] };
   if ((m = /^s(\d+)\.(id|w|l)$/.exec(key))) return { kind: 'section', i: +m[1], leaf: m[2] };
   if ((m = /^b(\d+)\.(\w+)$/.exec(key))) return { kind: 'bend', i: +m[1], leaf: m[2] };
   return null;
 }
 // String-valued (enum) leaves bypass numeric coercion in set(): the end type and
 // the fit's Inside/Outside toggle.
-const isEnumKey = (key) => /\.end\.(type|FitSide)$/.test(key);
+const isEnumKey = (key) => /\.end[AB]\.(type|FitSide)$/.test(key);
 function getP(params, key) {
   const k = parseKey(key); if (!k || !params) return undefined;
   if (k.kind === 'section') return params.sections[k.i] && params.sections[k.i][k.leaf];
   if (k.kind === 'bend') return params.bends[k.i] && params.bends[k.i][k.leaf];
-  const end = params.sections[k.i] && params.sections[k.i].end;
+  const end = params.sections[k.i] && params.sections[k.i][k.slot];
   return end && end[k.leaf];
 }
 function setLeaf(params, key, v) {
   const k = parseKey(key); if (!k) return;
   if (k.kind === 'section') params.sections[k.i][k.leaf] = v;
   else if (k.kind === 'bend') params.bends[k.i][k.leaf] = v;
-  else params.sections[k.i].end[k.leaf] = v;
+  else params.sections[k.i][k.slot][k.leaf] = v;
 }
 function limitOf(key) {
   const k = parseKey(key); if (!k) return null;
@@ -371,23 +373,23 @@ function set(key, raw) {
   // raising one trims the other so together they stay within the wall, and the
   // control just edited wins (measured from the drag's start, so reversing
   // restores the sibling).
-  const cm = /^s(\d+)\.end\.(ChY|ChIY)$/.exec(key);
+  const cm = /^s(\d+)\.(endA|endB)\.(ChY|ChIY)$/.exec(key);
   if (cm) {
-    const i = +cm[1], sib = cm[2] === 'ChY' ? 'ChIY' : 'ChY';
+    const i = +cm[1], slot = cm[2], sib = cm[3] === 'ChY' ? 'ChIY' : 'ChY';
     const wall = next.sections[i].w;
-    next.sections[i].end[sib] = clamp(round(wall - v, 2), 0, dragBase.sections[i].end[sib]);
+    next.sections[i][slot][sib] = clamp(round(wall - v, 2), 0, dragBase.sections[i][slot][sib]);
   }
   commit(geo.normalize(next).p, key);
 }
 
-// Copy one section's full definition (diameter, wall, length, and - when both
-// are extremes - the end treatment) onto another. Interior sections have no end.
+// Copy one section's full definition (diameter, wall, length, and any end
+// treatment the two share a side of) onto another. Interior sections have no end.
 function copySection(target, source) {
   const p = geo.cloneParams(state.params);
   const s = p.sections[source], t = p.sections[target];
   if (!s || !t) return;
   t.id = s.id; t.w = s.w; t.l = s.l;
-  if (t.end && s.end) t.end = { ...s.end };
+  for (const slot of geo.END_SLOTS) if (t[slot] && s[slot]) t[slot] = { ...s[slot] };
   commit(geo.normalize(p).p, 'copy-' + target);
 }
 
@@ -402,15 +404,16 @@ function setBend(bendIndex, leaf, secLeaf, mode) {
 }
 
 // Structural edits: splice sections/bends, then re-home the two end treatments
-// onto the geometric extremes (they belong only to the first & last sections).
+// onto the geometric extremes (endA on the first section, endB on the last -
+// the same section when only one is left).
 function structuralEdit(mutate, tag) {
   const p = geo.cloneParams(state.params);
-  const firstEnd = p.sections[0].end;
-  const lastEnd = p.sections[p.sections.length - 1].end;
+  const endA = p.sections[0].endA;
+  const endB = p.sections[p.sections.length - 1].endB;
   mutate(p);
-  for (const s of p.sections) delete s.end;
-  p.sections[0].end = firstEnd || geo.defaultEnd();
-  p.sections[p.sections.length - 1].end = lastEnd || geo.defaultEnd();
+  for (const s of p.sections) for (const slot of geo.END_SLOTS) delete s[slot];
+  p.sections[0].endA = endA || geo.defaultEnd();
+  p.sections[p.sections.length - 1].endB = endB || geo.defaultEnd();
   commit(geo.normalize(p).p, tag);
 }
 // A straight (0°) transition bend whose diameter/wall match a section.
@@ -419,10 +422,11 @@ function bendFrom(sec) {
   nb.ang = 0; nb.idm = sec.id; nb.w2 = sec.w;
   return nb;
 }
-// Add a section, copying the section it was created from. The first section
-// prepends (the copy becomes the new first, shifting the rest along); the last
-// appends. Only first/last sections expose the button, so these are the only
-// cases. structuralEdit re-homes the end treatments onto the new extremes.
+// Add a section, copying the section it was created from. The last section
+// appends; the first prepends (the copy becomes the new first, shifting the rest
+// along). Only first/last sections expose the button, so these are the only
+// cases — and a lone section, being both, appends. structuralEdit re-homes the
+// end treatments onto the new extremes.
 // A collapsed source section spawns its new section and bend collapsed too.
 function addSectionBefore(i) {
   const collapse = collapsedGroups.has('s' + i);
@@ -447,7 +451,7 @@ function addSectionAfter(i) {
   }, 'add-after-' + i);
 }
 function removeSection(i) {
-  if (state.params.sections.length <= 2) return;   // keep at least two
+  if (state.params.sections.length <= 1) return;   // a pipe is at least one straight run
   const b = i > 0 ? i - 1 : 0;                      // the adjacent bend that goes with it
   collapsedGroups.delete('s' + i); shiftCollapsed('s', i + 1, -1);
   collapsedGroups.delete('b' + b); shiftCollapsed('b', b + 1, -1);
@@ -594,13 +598,21 @@ function numCtrl(key, label, hint, step, integer, maxOverride, minOverride) {
   return { kind: 'num', key, label, hint, min: minOverride != null ? minOverride : lim[0], max: maxOverride != null ? maxOverride : lim[1], step, numStep: integer ? 1 : 0.1 };
 }
 
+// How much straight length each of a section's end treatments may spend: the
+// whole run, or half of it when the section carries both (mirrors endAvail in
+// the geometry).
+const endsOf = (sec) => geo.END_SLOTS.map((k) => sec && sec[k]).filter(Boolean);
+const endAvail = (sec) => sec.l / Math.max(1, endsOf(sec).length);
+
 // A slip-joint's stop is a solid floor (as thick as the wall, up to half the
 // joint length) that is part of the section, so the section can't be shorter
-// than it. Returns that floor for a fit-ended section, else undefined (no lift).
+// than it - and a section with a joint at each end needs room for both floors.
+// Returns that minimum for a fit-ended section, else undefined (no lift).
 function sectionMinLen(sec) {
-  const e = sec && sec.end;
-  if (!e || e.type !== 'fit') return undefined;
-  return round(Math.min(sec.w, e.FitL / 2), 2);
+  const ends = endsOf(sec).filter((e) => e.type === 'fit');
+  if (!ends.length) return undefined;
+  const floor = Math.max(...ends.map((e) => Math.min(sec.w, e.FitL / 2)));
+  return round(floor * endsOf(sec).length, 2);
 }
 
 // The bend-length (B) control. For a bent transition B is the inner-bend face
@@ -650,12 +662,19 @@ const sectionInner = (i) => (p) => p.sections[i].id;
 const bendInner = (i) => (p) => p.bends[i].idmSmooth ? (p.sections[i].id + p.sections[i + 1].id) / 2 : p.bends[i].idm;
 const bendWall = (i) => (p) => p.bends[i].w2Smooth ? (p.sections[i].w + p.sections[i + 1].w) / 2 : p.bends[i].w2;
 
-// End-treatment controls for section index `i` (must be a first/last section).
-function endControls(i) {
+// End-treatment controls for one open end: `slot` is 'endA' (the left end, on
+// the first section) or 'endB' (the right end, on the last). Only a section that
+// is both first and last shows one block of each, and there a "Left end" /
+// "Right end" heading tells the two apart - the controls themselves are labelled
+// the same either way.
+function endControls(i, slot) {
   const sec = state.params.sections[i];
-  const end = sec.end;
-  const pre = 's' + i + '.end.';
-  const list = [{
+  const end = sec[slot];
+  const side = slot === 'endA' ? 'Left' : 'Right';
+  const pre = 's' + i + '.' + slot + '.';
+  const list = endsOf(sec).length > 1
+    ? [{ kind: 'subhead', key: pre + 'head', label: side + ' end' }] : [];
+  list.push({
     kind: 'enum', key: pre + 'type', label: 'End treatment', hint: '',
     options: [
       { value: 'plain', label: 'Plain' },
@@ -665,9 +684,9 @@ function endControls(i) {
       { value: 'teeth', label: 'Teeth' },
       { value: 'fit', label: 'Slip Joint' },
     ],
-  }];
+  });
   if (end.type === 'chamfer') {
-    const secLen = sec.l;   // along-axis cap
+    const secLen = endAvail(sec);   // along-axis cap
     const wall = sec.w;     // radial cap: each maxes at the wall; raising one trims the other (see set)
     list.push(numCtrl(pre + 'ChX', 'Outer chamfer — X, along axis', 'mm', 0.1, false, secLen));
     list.push(numCtrl(pre + 'ChY', 'Outer chamfer — Y, radial', 'mm', 0.1, false, wall));
@@ -735,17 +754,20 @@ function groupModel(g) {
       odCtrl('s' + i + '.w', sectionInner(i)),
       { kind: 'readout', key: 's' + i + '.outer', getWall: (p) => p.sections[i].w },
       numCtrl('s' + i + '.l', 'Length', 'mm', 1, false, undefined, sectionMinLen(sections[i])),
-      ...(isFirst || isLast ? endControls(i) : []),
+      // The pipe's two open ends: the first section owns the left one, the last
+      // the right. A lone section owns both and shows the two blocks in order.
+      ...(isFirst ? endControls(i, 'endA') : []),
+      ...(isLast ? endControls(i, 'endB') : []),
     ];
-    // Only the two end sections can add or remove: the first prepends a new
-    // first section, the last appends a new last section. (When N === 2 a section
-    // is both first and last; each still gets a single, correctly-directed add.)
+    // Only the two end sections can add or remove: the last appends a new last
+    // section, the first prepends a new first one. (A lone section is both;
+    // its + Section appends.)
     groups.push({
       id: 's' + i, kind: 'section', index: i,
       tag: String(i + 1), title: 'Section ' + (i + 1),
-      onAdd: isFirst ? () => addSectionBefore(0) : isLast ? () => addSectionAfter(i) : null,
-      addTitle: isFirst ? 'Add a new first section (copies this one)' : 'Add a new last section (copies this one)',
-      onRemove: ((isFirst || isLast) && N > 2) ? () => removeSection(i) : null,
+      onAdd: isLast ? () => addSectionAfter(i) : isFirst ? () => addSectionBefore(0) : null,
+      addTitle: isLast ? 'Add a new last section (copies this one)' : 'Add a new first section (copies this one)',
+      onRemove: ((isFirst || isLast) && N > 1) ? () => removeSection(i) : null,
       controls,
     });
 
@@ -1010,6 +1032,14 @@ function buildPanel(groups) {
         body.append(h('div', 'field-readout', { 'data-readout': c.key }));
         continue;
       }
+      // A heading inside a card, separating two blocks of controls (the two end
+      // treatments of a single-section pipe).
+      if (c.kind === 'subhead') {
+        const div = h('div', 'field-subhead');
+        div.textContent = c.label;
+        body.append(div);
+        continue;
+      }
       if (c.kind === 'toggle') {
         const label = h('label', 'field-toggle', { title: c.title || '' });
         const cb = h('input', null, { type: 'checkbox', 'data-toggle': c.key });
@@ -1090,7 +1120,7 @@ function updatePanelValues(groups) {
   // control values
   for (const g of groups) {
     for (const c of g.controls) {
-      if (c.kind === 'actions') continue;
+      if (c.kind === 'actions' || c.kind === 'subhead') continue;
       if (c.kind === 'toggle') {
         const cb = el.panelGrid.querySelector(`[data-toggle="${c.key}"]`);
         const on = !!getP(p, c.key);
@@ -1277,7 +1307,7 @@ function render() {
     const groups = groupModel(g);
     const sig = [
       state.units, state.layout, secs.length,
-      secs[0].end.type, secs[secs.length - 1].end.type,
+      secs[0].endA.type, secs[secs.length - 1].endB.type,
       p.bends.map((b) => b.idmSmooth + '' + b.w2Smooth).join(','),
     ].join('|');
     if (sig !== panelSig) { buildPanel(groups); panelSig = sig; }

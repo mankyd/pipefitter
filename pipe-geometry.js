@@ -312,9 +312,9 @@ function fitEnd(sec, slot, index, notes) {
   } else if (e.type === 'fit') {
     // The joint extends past the section rather than carving into it, so its
     // engagement is independent of the section length (bounded only by FitL's
-    // limit, and by the mate's bore for a spigot - see capSpigot). The stop's
-    // floor does sit inside the section, but fitFloor already keeps it within
-    // the run this end is given, so nothing here has to give.
+    // limit, and by the mating section's run at a joint - see capEngagement).
+    // The stop's floor does sit inside the section, but fitFloor already keeps
+    // it within the run this end is given, so nothing here has to give.
     //
     // A spigot's tolerance can't exceed the bore (it would invert the wall).
     if (e.FitSide === 'inside') {
@@ -396,22 +396,24 @@ function syncJoint(src, dst) {
   }
 }
 
-// A spigot plugs INTO its mate's bore, so it can reach no further than the
-// straight run it slides into: past that the bore runs on into the mate's bend,
-// where a stub would foul rather than seat. Since FitL is the engagement, that
-// is simply the run the mating end owns - the whole mating section, or half of
-// it when that lone section carries a treatment on each side. Only the inside
-// (male) side is bounded this way: a socket receives the mate instead of
-// entering it, so nothing over there limits how deep it can be. With no pipe
-// joined on there is nothing to enter, and the joint length stays free.
+// Either way round, a slip joint's engagement is a length of the MATE that ends
+// up inside the joint - swallowed by a socket's cup, or run past by a spigot
+// sliding up the mate's bore - so it can reach no further than the straight run
+// waiting over there. Past that the mate turns into its bend, where the joint
+// would foul rather than seat. Since FitL is the engagement, the bound is
+// simply the run the mating end owns: the whole mating section, or half of it
+// when that lone section carries a treatment on each side. A socket is no less
+// bounded than a spigot - it swallows the mate rather than entering it, but the
+// mate has only so much to give. With no pipe joined on there is nothing to
+// mate with, and the joint length stays free.
 //
 // The pull-back is stored rather than noted, like every other clamp that keeps
 // a value legal: the joint-length control's bound moves with the mating
 // section, so the limit shows up where it is edited.
-function capSpigot(pipes, j) {
+function capEngagement(pipes, j) {
   const cap = (m, mate) => {
     const e = endAt(m);
-    if (!e || e.type !== 'fit' || e.FitSide !== 'inside') return;
+    if (!e || e.type !== 'fit') return;
     const room = endAvail(mate.sec);
     if (e.FitL > room) e.FitL = round(room, 2);
   };
@@ -433,7 +435,7 @@ function syncJoints(pipes, driver) {
   const doJoint = (j, fromRight) => {
     const a = mateSide(pipes[j], 'l'), b = mateSide(pipes[j + 1], 'r');
     if (fromRight) syncJoint(b, a); else syncJoint(a, b);
-    capSpigot(pipes, j);
+    capEngagement(pipes, j);
   };
   // Editing a pipe's first section drives the joint on its left from the right.
   const rev = driver && driver.si === 0 && driver.pi > 0 ? driver.pi - 1 : -1;

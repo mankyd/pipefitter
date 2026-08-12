@@ -1261,10 +1261,17 @@ function buildPanel(groups) {
     if (g.pipeHead) {
       host = h('div', 'pipe-block', { 'data-group-id': g.id });
       if (collapsedGroups.has(g.id)) host.classList.add('collapsed');
+      // Hovering the header bands the whole pipe in the schematic - the same
+      // gesture a section card offers, one level up. It hangs off the header
+      // rather than the block because the block CONTAINS the section cards:
+      // mouseenter doesn't re-fire when the pointer leaves a child for its
+      // parent, so a block-level listener would go quiet the moment you passed
+      // over a section and came back.
+      const head = groupHead(g, host, 'pipe-head');
       const seg = { pipe: g.index, kind: 'pipe', index: g.index };
-      host.addEventListener('mouseenter', () => { hoveredSection = seg; drawSchematic(); });
-      host.addEventListener('mouseleave', () => { if (hoveredSection === seg) { hoveredSection = null; drawSchematic(); } });
-      host.append(groupHead(g, host, 'pipe-head'));
+      head.addEventListener('mouseenter', () => { hoveredSection = seg; drawSchematic(); });
+      head.addEventListener('mouseleave', () => { if (hoveredSection === seg) { hoveredSection = null; drawSchematic(); } });
+      host.append(head);
       el.panelGrid.append(host);
       continue;
     }

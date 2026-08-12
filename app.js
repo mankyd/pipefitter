@@ -98,7 +98,11 @@ const VIEW_HOME = { az: -0.7, pol: 1.30 };   // default orbit angles (az ≈ −
 // two equal legs put the diagonal well outside `span`. That one still clears
 // the canvas edges and the schematic card here, so anything flatter does too.
 const FRAME_K = 1.45;
-let renderer, scene, camera, mesh, material, grid, hemiLight;
+let renderer, scene, camera, meshGroup, material, grid, hemiLight;
+// One mesh per pipe, all sharing `material` and parented to meshGroup. Separate
+// objects rather than one merged buffer: the parts are separate in the world
+// too, and keeping them apart is what lets the view treat one on its own.
+const meshes = [];
 let gridStep = 10, gridCells = 20;   // current floor-grid spacing, so a theme change can rebuild it
 let orbit = null;
 let fitK = 1;
@@ -158,6 +162,12 @@ const SCENE_THEME = {
 // last section) ride in `e0` / `eN` as `type~p1~p2...`, carrying only the params
 // that treatment uses. Missing values fall back to defaults; the shape is
 // re-normalized on load (≥2 sections, exactly N-1 bends).
+//
+// Several pipes joined into a chain add one more level: `;` separates pipes
+// inside `s` and `b`, and the ends move to a single `e` list carrying both ends
+// of each pipe - `e=<first>|<last>;<first>|<last>`. A design with one pipe is
+// still written the old way, `e0`/`eN` and no `;`, so every link ever shared
+// keeps its exact URL; `e0`/`eN` are still read when `e` is absent.
 
 const encodeEnd = (end) => [end.type, ...(END_TREATMENT_KEYS[end.type] || []).map((suf) => end[suf])].join('~');
 function decodeEnd(token) {
@@ -171,29 +181,47 @@ function decodeEnd(token) {
 function readHash() {
   const sRaw = hashParam('s');
   if (sRaw === null) return null;
-  const sections = sRaw.split('|').filter((x) => x !== '').map((tok) => {
-    const f = tok.split('~');
-    return { id: f[0], w: f[1], l: f[2] };
+  const bRaw = hashParam('b') || '';
+  const eRaw = hashParam('e');
+  const sPipes = sRaw.split(';');
+  const bPipes = bRaw.split(';');
+  // `e` when present, else the single-pipe `e0`/`eN` pair.
+  const ePipes = eRaw !== null ? eRaw.split(';')
+    : [[hashParam('e0'), hashParam('eN')].join('|')];
+
+  const pipes = sPipes.map((sTok, j) => {
+    const sections = sTok.split('|').filter((x) => x !== '').map((tok) => {
+      const f = tok.split('~');
+      return { id: f[0], w: f[1], l: f[2] };
+    });
+    const bends = (bPipes[j] || '').split('|').filter((x) => x !== '').map((tok) => {
+      const f = tok.split('~');
+      return { ang: f[0], l2: f[1], idm: f[2], w2: f[3], idmSmooth: f[4], w2Smooth: f[5] };
+    });
+    if (sections.length >= 1) {
+      const ends = (ePipes[j] || '').split('|');
+      sections[0].end = decodeEnd(ends[0]);
+      sections[sections.length - 1].end = decodeEnd(ends[1]);
+    }
+    return { sections, bends };
   });
-  const bRaw = hashParam('b');
-  const bends = (bRaw === null ? [] : bRaw.split('|').filter((x) => x !== '')).map((tok) => {
-    const f = tok.split('~');
-    return { ang: f[0], l2: f[1], idm: f[2], w2: f[3], idmSmooth: f[4], w2Smooth: f[5] };
-  });
-  if (sections.length >= 1) {
-    const e0 = hashParam('e0'), eN = hashParam('eN');
-    sections[0].end = decodeEnd(e0);
-    sections[sections.length - 1].end = decodeEnd(eN);
-  }
-  return geo.normalize({ sections, bends }).p;
+  return geo.normalizeChain({ pipes }).p;
 }
 
 function writeHash(params) {
-  const secs = params.sections;
-  const sPart = secs.map((sc) => [sc.id, sc.w, sc.l].join('~')).join('|');
-  const bPart = params.bends.map((bd) => [bd.ang, bd.l2, bd.idm, bd.w2, bd.idmSmooth, bd.w2Smooth].join('~')).join('|');
-  let s = 's=' + sPart + '&b=' + bPart +
-    '&e0=' + encodeEnd(secs[0].end) + '&eN=' + encodeEnd(secs[secs.length - 1].end);
+  const pipes = params.pipes;
+  const sPart = pipes.map((pp) => pp.sections.map((sc) => [sc.id, sc.w, sc.l].join('~')).join('|')).join(';');
+  const bPart = pipes.map((pp) => pp.bends.map((bd) => [bd.ang, bd.l2, bd.idm, bd.w2, bd.idmSmooth, bd.w2Smooth].join('~')).join('|')).join(';');
+  const endsOf = (pp) => encodeEnd(pp.sections[0].end) + '|' + encodeEnd(pp.sections[pp.sections.length - 1].end);
+  let s = 's=' + sPart + '&b=' + bPart;
+  // One pipe keeps the original two-key spelling, so old links round-trip byte
+  // for byte; a chain needs the list form.
+  if (pipes.length === 1) {
+    const secs = pipes[0].sections;
+    s += '&e0=' + encodeEnd(secs[0].end) + '&eN=' + encodeEnd(secs[secs.length - 1].end);
+  } else {
+    s += '&e=' + pipes.map(endsOf).join(';');
+  }
   // The chosen render style rides along too (omitted when it's the default), so
   // the whole viewing state lives in the URL - no cookies or localStorage.
   if (renderStyle && renderStyle !== 'steel') s += '&render=' + renderStyle;
@@ -306,10 +334,11 @@ function onKey(e) {
 
 // ── Parameter editing (clamp, never reject) ─────────────────────────────────
 // Every editable value has a string key encoding its location in the array
-// model, so undo-coalescing and DOM lookups stay key-based:
-//   s<i>.id | s<i>.w | s<i>.l          section dimensions
-//   s<i>.end.type | s<i>.end.<suf>     first/last end treatment
-//   b<i>.ang | b<i>.l2 | b<i>.idm | b<i>.w2 | b<i>.idmSmooth | b<i>.w2Smooth
+// model, so undo-coalescing and DOM lookups stay key-based. Every key names the
+// pipe it belongs to, so a chain of pipes needs no second addressing scheme:
+//   p<j>.s<i>.id | p<j>.s<i>.w | p<j>.s<i>.l        section dimensions
+//   p<j>.s<i>.end.type | p<j>.s<i>.end.<suf>        first/last end treatment
+//   p<j>.b<i>.ang | p<j>.b<i>.l2 | p<j>.b<i>.idm | ... | p<j>.b<i>.w2Smooth
 const END_TREATMENT_KEYS = {
   plain: [],
   chamfer: ['ChX', 'ChY', 'ChIX', 'ChIY'],
@@ -320,27 +349,43 @@ const END_TREATMENT_KEYS = {
 };
 
 function parseKey(key) {
+  const p = /^p(\d+)\.(.+)$/.exec(key);
+  if (!p) return null;
+  const pi = +p[1], rest = p[2];
   let m;
-  if ((m = /^s(\d+)\.end\.(.+)$/.exec(key))) return { kind: 'end', i: +m[1], leaf: m[2] };
-  if ((m = /^s(\d+)\.(id|w|l)$/.exec(key))) return { kind: 'section', i: +m[1], leaf: m[2] };
-  if ((m = /^b(\d+)\.(\w+)$/.exec(key))) return { kind: 'bend', i: +m[1], leaf: m[2] };
+  if ((m = /^s(\d+)\.end\.(.+)$/.exec(rest))) return { pi, kind: 'end', i: +m[1], leaf: m[2] };
+  if ((m = /^s(\d+)\.(id|w|l)$/.exec(rest))) return { pi, kind: 'section', i: +m[1], leaf: m[2] };
+  if ((m = /^b(\d+)\.(\w+)$/.exec(rest))) return { pi, kind: 'bend', i: +m[1], leaf: m[2] };
   return null;
 }
 // String-valued (enum) leaves bypass numeric coercion in set(): the end type and
 // the fit's Inside/Outside toggle.
 const isEnumKey = (key) => /\.end\.(type|FitSide)$/.test(key);
+// The pipe a key addresses, or null.
+const pipeOf = (params, key) => {
+  const k = parseKey(key);
+  return k && params && params.pipes[k.pi] ? params.pipes[k.pi] : null;
+};
 function getP(params, key) {
-  const k = parseKey(key); if (!k || !params) return undefined;
-  if (k.kind === 'section') return params.sections[k.i] && params.sections[k.i][k.leaf];
-  if (k.kind === 'bend') return params.bends[k.i] && params.bends[k.i][k.leaf];
-  const end = params.sections[k.i] && params.sections[k.i].end;
+  const k = parseKey(key); if (!k) return undefined;
+  const pp = pipeOf(params, key); if (!pp) return undefined;
+  if (k.kind === 'section') return pp.sections[k.i] && pp.sections[k.i][k.leaf];
+  if (k.kind === 'bend') return pp.bends[k.i] && pp.bends[k.i][k.leaf];
+  const end = pp.sections[k.i] && pp.sections[k.i].end;
   return end && end[k.leaf];
 }
 function setLeaf(params, key, v) {
   const k = parseKey(key); if (!k) return;
-  if (k.kind === 'section') params.sections[k.i][k.leaf] = v;
-  else if (k.kind === 'bend') params.bends[k.i][k.leaf] = v;
-  else params.sections[k.i].end[k.leaf] = v;
+  const pp = pipeOf(params, key); if (!pp) return;
+  if (k.kind === 'section') pp.sections[k.i][k.leaf] = v;
+  else if (k.kind === 'bend') pp.bends[k.i][k.leaf] = v;
+  else pp.sections[k.i].end[k.leaf] = v;
+}
+// Which section an edit came from, so the joints it touches copy OUT of it
+// rather than over it (see syncJoints). Bends never sit on a joint.
+function driverOf(key) {
+  const k = parseKey(key);
+  return k && k.kind !== 'bend' ? { pi: k.pi, si: k.i } : null;
 }
 function limitOf(key) {
   const k = parseKey(key); if (!k) return null;
@@ -371,47 +416,54 @@ function set(key, raw) {
   // raising one trims the other so together they stay within the wall, and the
   // control just edited wins (measured from the drag's start, so reversing
   // restores the sibling).
-  const cm = /^s(\d+)\.end\.(ChY|ChIY)$/.exec(key);
-  if (cm) {
-    const i = +cm[1], sib = cm[2] === 'ChY' ? 'ChIY' : 'ChY';
-    const wall = next.sections[i].w;
-    next.sections[i].end[sib] = clamp(round(wall - v, 2), 0, dragBase.sections[i].end[sib]);
+  const k = parseKey(key);
+  if (k && k.kind === 'end' && (k.leaf === 'ChY' || k.leaf === 'ChIY')) {
+    const sib = k.leaf === 'ChY' ? 'ChIY' : 'ChY';
+    const sec = next.pipes[k.pi].sections[k.i];
+    sec.end[sib] = clamp(round(sec.w - v, 2), 0, dragBase.pipes[k.pi].sections[k.i].end[sib]);
   }
-  commit(geo.normalize(next).p, key);
+  commit(geo.normalizeChain(next, driverOf(key)).p, key);
 }
 
 // Copy one section's full definition (diameter, wall, length, and - when both
 // are extremes - the end treatment) onto another. Interior sections have no end.
-function copySection(target, source) {
+function copySection(pi, target, source) {
   const p = geo.cloneParams(state.params);
-  const s = p.sections[source], t = p.sections[target];
+  const pp = p.pipes[pi];
+  const s = pp.sections[source], t = pp.sections[target];
   if (!s || !t) return;
   t.id = s.id; t.w = s.w; t.l = s.l;
   if (t.end && s.end) t.end = { ...s.end };
-  commit(geo.normalize(p).p, 'copy-' + target);
+  commit(geo.normalizeChain(p, { pi, si: target }).p, 'copy-' + pi + '-' + target);
 }
 
 // Set a bend value (idm/w2) from its two neighboring sections' id/w:
 // 'left'/'right' copy that neighbor's value, 'between' uses their average.
-function setBend(bendIndex, leaf, secLeaf, mode) {
-  const a = state.params.sections[bendIndex][secLeaf], b = state.params.sections[bendIndex + 1][secLeaf];
+function setBend(pi, bendIndex, leaf, secLeaf, mode) {
+  const secs = state.params.pipes[pi].sections;
+  const a = secs[bendIndex][secLeaf], b = secs[bendIndex + 1][secLeaf];
   const v = mode === 'left' ? a : mode === 'right' ? b : (a + b) / 2;
   const p = geo.cloneParams(state.params);
-  p.bends[bendIndex][leaf] = v;
-  commit(geo.normalize(p).p, 'b' + bendIndex + '.' + leaf + '-' + mode);
+  p.pipes[pi].bends[bendIndex][leaf] = v;
+  commit(geo.normalizeChain(p).p, 'p' + pi + '.b' + bendIndex + '.' + leaf + '-' + mode);
 }
 
-// Structural edits: splice sections/bends, then re-home the two end treatments
-// onto the geometric extremes (they belong only to the first & last sections).
-function structuralEdit(mutate, tag) {
+// Structural edits within one pipe: splice its sections/bends, then re-home its
+// two end treatments onto its geometric extremes (they belong only to the first
+// & last sections). A section added at a mated end therefore inherits the joint
+// - the treatment follows the extreme, and syncJoints re-locks the dimensions.
+// Committed with no coalescing key: adding or removing a part is a discrete
+// act, not a gesture, so each one is its own undo step however fast they come.
+function structuralEdit(pi, mutate, driver) {
   const p = geo.cloneParams(state.params);
-  const firstEnd = p.sections[0].end;
-  const lastEnd = p.sections[p.sections.length - 1].end;
-  mutate(p);
-  for (const s of p.sections) delete s.end;
-  p.sections[0].end = firstEnd || geo.defaultEnd();
-  p.sections[p.sections.length - 1].end = lastEnd || geo.defaultEnd();
-  commit(geo.normalize(p).p, tag);
+  const pp = p.pipes[pi];
+  const firstEnd = pp.sections[0].end;
+  const lastEnd = pp.sections[pp.sections.length - 1].end;
+  mutate(pp);
+  for (const s of pp.sections) delete s.end;
+  pp.sections[0].end = firstEnd || geo.defaultEnd();
+  pp.sections[pp.sections.length - 1].end = lastEnd || geo.defaultEnd();
+  commit(geo.normalizeChain(p, driver).p, null);
 }
 // A straight (0°) transition bend whose diameter/wall match a section.
 function bendFrom(sec) {
@@ -422,39 +474,87 @@ function bendFrom(sec) {
 // Add a section, copying the section it was created from. The first section
 // prepends (the copy becomes the new first, shifting the rest along); the last
 // appends. Only first/last sections expose the button, so these are the only
-// cases. structuralEdit re-homes the end treatments onto the new extremes.
+// cases. structuralEdit re-homes the end treatments onto the new extremes -
+// which is exactly what makes this work at a mated end: the new section takes
+// over the joint, inheriting the treatment, and the old one becomes interior.
 // A collapsed source section spawns its new section and bend collapsed too.
-function addSectionBefore(i) {
-  const collapse = collapsedGroups.has('s' + i);
-  shiftCollapsed('s', i, 1);                         // section i and everything after it move up one
-  shiftCollapsed('b', i, 1);                         // (prepend inserts a bend at i as well)
-  if (collapse) { collapsedGroups.add('s' + i); collapsedGroups.add('b' + i); }
-  structuralEdit((p) => {
+function addSectionBefore(pi, i) {
+  const collapse = collapsedGroups.has(gid(pi, 's', i));
+  shiftCollapsed(pi, 's', i, 1);                     // section i and everything after it move up one
+  shiftCollapsed(pi, 'b', i, 1);                     // (prepend inserts a bend at i as well)
+  if (collapse) { collapsedGroups.add(gid(pi, 's', i)); collapsedGroups.add(gid(pi, 'b', i)); }
+  structuralEdit(pi, (p) => {
     const sec = p.sections[i];
     p.sections.splice(i, 0, { id: sec.id, w: sec.w, l: sec.l });
     p.bends.splice(i, 0, bendFrom(sec));            // connects new section i and old (now i+1)
-  }, 'add-before-' + i);
+    // The new section carries the old one's dimensions, so a joint on this side
+    // is unchanged - drive from it so the neighbouring pipe isn't touched.
+  }, { pi, si: 0 });
 }
-function addSectionAfter(i) {
+function addSectionAfter(pi, i) {
   // i is the last section, so the new section (i+1) and new bend (i) sit at the
   // end and nothing existing is renumbered.
-  const collapse = collapsedGroups.has('s' + i);
-  if (collapse) { collapsedGroups.add('s' + (i + 1)); collapsedGroups.add('b' + i); }
-  structuralEdit((p) => {
+  const collapse = collapsedGroups.has(gid(pi, 's', i));
+  if (collapse) { collapsedGroups.add(gid(pi, 's', i + 1)); collapsedGroups.add(gid(pi, 'b', i)); }
+  structuralEdit(pi, (p) => {
     const sec = p.sections[i];
     p.sections.splice(i + 1, 0, { id: sec.id, w: sec.w, l: sec.l });
     p.bends.splice(i, 0, bendFrom(sec));            // connects old section i and new (i+1)
-  }, 'add-after-' + i);
+  });
 }
-function removeSection(i) {
-  if (state.params.sections.length <= 2) return;   // keep at least two
+function removeSection(pi, i) {
+  const pipe = state.params.pipes[pi];
+  if (pipe.sections.length <= 2) return;            // keep at least two
   const b = i > 0 ? i - 1 : 0;                      // the adjacent bend that goes with it
-  collapsedGroups.delete('s' + i); shiftCollapsed('s', i + 1, -1);
-  collapsedGroups.delete('b' + b); shiftCollapsed('b', b + 1, -1);
-  structuralEdit((p) => {
+  collapsedGroups.delete(gid(pi, 's', i)); shiftCollapsed(pi, 's', i + 1, -1);
+  collapsedGroups.delete(gid(pi, 'b', b)); shiftCollapsed(pi, 'b', b + 1, -1);
+  // Losing a mating section hands the joint to its neighbour inside this pipe,
+  // which has its own diameters. Let the pipe on the far side of the joint keep
+  // its dimensions and have the survivor adapt - removing a section from one
+  // pipe should never resize another.
+  const last = i === pipe.sections.length - 1;
+  const driver = last && pi < state.params.pipes.length - 1 ? { pi: pi + 1, si: 0 } : null;
+  structuralEdit(pi, (p) => {
     p.sections.splice(i, 1);
     p.bends.splice(b, 1);                            // drop an adjacent bend
-  }, 'remove-' + i);
+  }, driver);
+}
+
+// ── Pipes ───────────────────────────────────────────────────────────────────
+// A new pipe is a two-section stub copying the dimensions of the end it mates
+// with, joined by a straight transition - the same shape "+ Section" produces,
+// one level up. Its mating end is left to syncJoints, which gives it whatever
+// complements the end it was grown from; its free end starts plain.
+function addPipe(where) {
+  const pipes = state.params.pipes;
+  if (pipes.length >= geo.MAX_PIPES) return;
+  const after = where === 'after';
+  const anchor = after ? pipes[pipes.length - 1] : pipes[0];
+  const src = after ? anchor.sections[anchor.sections.length - 1] : anchor.sections[0];
+  const dims = () => ({ id: src.id, w: src.w, l: src.l, end: geo.defaultEnd() });
+  const np = { sections: [dims(), dims()], bends: [bendFrom(src)] };
+  const p = geo.cloneParams(state.params);
+  if (after) {
+    p.pipes.push(np);
+  } else {
+    shiftCollapsedPipes(0, 1);                       // every existing pipe moves up one
+    p.pipes.unshift(np);
+  }
+  // The pipe that was already there owns the joint either way: appending flows
+  // left to right by default, prepending has to be told (the existing pipe is
+  // now pipe 1, and its FIRST end is the one that was clicked).
+  commit(geo.normalizeChain(p, after ? null : { pi: 1, si: 0 }).p, null);
+}
+function removePipe(j) {
+  if (state.params.pipes.length <= 1) return;
+  const p = geo.cloneParams(state.params);
+  p.pipes.splice(j, 1);
+  for (const id of [...collapsedGroups]) {
+    const g = parseGroupId(id);
+    if (g && g.pi === j) collapsedGroups.delete(id);
+  }
+  shiftCollapsedPipes(j + 1, -1);
+  commit(geo.normalizeChain(p).p, null);
 }
 
 function geometry() {
@@ -462,7 +562,7 @@ function geometry() {
   const sig = JSON.stringify(state.params);
   if (sig !== cachedSig) {
     cachedSig = sig;
-    cachedG = geo.build(state.params, 64); // 64-segment preview
+    cachedG = geo.buildChain(state.params, 64); // 64-segment preview
   }
   return cachedG;
 }
@@ -517,21 +617,73 @@ function orientPositions(positions, g, orient) {
   return out;
 }
 
-// Rebuild at export resolution (160 segments), orient, and download the blob.
-function exportModel(ext, serialize, orient) {
-  const hi = geo.build(state.params, 160);
-  const positions = orientPositions(hi.positions, hi, orient);
-  const blob = serialize(positions, hi.indices, 'pipe-adapter');
-  const secs = state.params.sections;
-  const nb = state.params.bends.length;
+// A name for one pipe, from the bores it runs between and how many bends it takes.
+function partName(pipe) {
+  const secs = pipe.sections, nb = pipe.bends.length;
+  return 'pipe-' + secs[0].id + 'to' + secs[secs.length - 1].id + '-' + nb + (nb === 1 ? 'bend' : 'bends');
+}
+
+function saveBlob(blob, filename) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'pipe-' + secs[0].id + 'to' + secs[secs.length - 1].id + '-' + nb + (nb === 1 ? 'bend.' : 'bends.') + ext;
+  a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
-const downloadSTL = (orient) => exportModel('stl', geo.toBinarySTL, orient);
-const download3MF = (orient) => exportModel('3mf', geo.to3MF, orient);
+
+// Rebuild at export resolution (160 segments) and orient each pipe. The pipes
+// come out of buildChain in assembly coordinates, so 'asis' downloads them
+// posed as they mate; 'left'/'right' lays each part flat on the bed by ITS OWN
+// end face, which is what actually gets printed.
+function exportParts(orient) {
+  const hi = geo.buildChain(state.params, 160);
+  return hi.pipes.map((g, j) => ({
+    name: partName(hi.p.pipes[j]),
+    positions: orientPositions(g.positions, g, orient),
+    indices: g.indices,
+  }));
+}
+
+// STL holds one solid per file, so a chain ships as a zip of one STL per pipe -
+// a burst of separate downloads gets blocked or buried by the browser.
+function downloadSTL(orient) {
+  const parts = exportParts(orient);
+  if (parts.length === 1) { saveBlob(geo.toBinarySTL(parts[0].positions, parts[0].indices, parts[0].name), parts[0].name + '.stl'); return; }
+  // Same-named pipes (a chain of identical parts) would collide inside the zip.
+  const seen = new Map();
+  for (const pt of parts) {
+    const n = (seen.get(pt.name) || 0) + 1;
+    seen.set(pt.name, n);
+    pt.name = (n > 1 ? pt.name + '-' + n : pt.name);
+  }
+  saveBlob(geo.toSTLZip(parts), 'pipe-assembly-' + parts.length + 'parts.zip');
+}
+
+// 3MF is indexed and multi-object, so the whole chain fits one file: each pipe
+// its own build item. Downloaded as-is they arrive posed as they mate; laid
+// flat for printing, each part is centered on its own end face, so they would
+// all land on the same spot - spread them along the bed instead.
+function download3MF(orient) {
+  const parts = exportParts(orient);
+  if (parts.length > 1 && orient !== 'asis') spreadParts(parts);
+  const name = parts.length === 1 ? parts[0].name : 'pipe-assembly-' + parts.length + 'parts';
+  saveBlob(geo.to3MF(parts), name + '.3mf');
+}
+
+// Lay parts out in a row along x, 5 mm apart, so an oriented multi-part export
+// opens as a printable bed rather than a pile at the origin.
+function spreadParts(parts) {
+  const GAP = 5;
+  let x = 0;
+  for (const pt of parts) {
+    const P = pt.positions;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < P.length; i += 3) { if (P[i] < lo) lo = P[i]; if (P[i] > hi) hi = P[i]; }
+    const shift = x - lo;
+    for (let i = 0; i < P.length; i += 3) P[i] += shift;
+    x += (hi - lo) + GAP;
+  }
+}
 
 // ── Help modal ──────────────────────────────────────────────────────────────
 // Minimal, dependency-free Markdown → HTML: headings, lists, blockquotes, rules,
@@ -594,15 +746,6 @@ function numCtrl(key, label, hint, step, integer, maxOverride, minOverride) {
   return { kind: 'num', key, label, hint, min: minOverride != null ? minOverride : lim[0], max: maxOverride != null ? maxOverride : lim[1], step, numStep: integer ? 1 : 0.1 };
 }
 
-// A slip-joint's stop is a solid floor (as thick as the wall, up to half the
-// joint length) that is part of the section, so the section can't be shorter
-// than it. Returns that floor for a fit-ended section, else undefined (no lift).
-function sectionMinLen(sec) {
-  const e = sec && sec.end;
-  if (!e || e.type !== 'fit') return undefined;
-  return round(Math.min(sec.w, e.FitL / 2), 2);
-}
-
 // The bend-length (B) control. For a bent transition B is the inner-bend face
 // arc, which has a floor — the tightest bend the neighboring diameters allow
 // (the schematic and the mesh never draw a shorter face). The slider's range
@@ -646,25 +789,43 @@ function setOuter(c, raw) {
 
 // A bend's effective inner Ø: the blend of its two neighbors when Continuous Ø
 // is on, else its fixed idm. A section's inner Ø is just its id.
-const sectionInner = (i) => (p) => p.sections[i].id;
-const bendInner = (i) => (p) => p.bends[i].idmSmooth ? (p.sections[i].id + p.sections[i + 1].id) / 2 : p.bends[i].idm;
-const bendWall = (i) => (p) => p.bends[i].w2Smooth ? (p.sections[i].w + p.sections[i + 1].w) / 2 : p.bends[i].w2;
+const sectionInner = (pi, i) => (p) => p.pipes[pi].sections[i].id;
+const bendInner = (pi, i) => (p) => {
+  const pp = p.pipes[pi];
+  return pp.bends[i].idmSmooth ? (pp.sections[i].id + pp.sections[i + 1].id) / 2 : pp.bends[i].idm;
+};
+const bendWall = (pi, i) => (p) => {
+  const pp = p.pipes[pi];
+  return pp.bends[i].w2Smooth ? (pp.sections[i].w + pp.sections[i + 1].w) / 2 : pp.bends[i].w2;
+};
 
-// End-treatment controls for section index `i` (must be a first/last section).
-function endControls(i) {
-  const sec = state.params.sections[i];
+// Every end treatment, with the mating subset flagged. A mated end can only
+// wear a treatment that has an opposite number, so the rest are struck from its
+// menu rather than silently rewritten the moment they're chosen.
+const END_TREATMENT_OPTIONS = [
+  { value: 'plain', label: 'Plain' },
+  { value: 'chamfer', label: 'Chamfer' },
+  { value: 'flange', label: 'Flange' },
+  { value: 'barb', label: 'Hose Barb' },
+  { value: 'teeth', label: 'Teeth' },
+  { value: 'fit', label: 'Slip Joint' },
+];
+
+// End-treatment controls for section `i` of pipe `pi` (must be a first/last
+// section). `mate` is null for a free end, else { pipe } naming the pipe on the
+// other side of the joint - which restricts the menu and labels the shared
+// values, so it is visible which numbers belong to both parts.
+function endControls(pi, i, mate) {
+  const sec = state.params.pipes[pi].sections[i];
   const end = sec.end;
-  const pre = 's' + i + '.end.';
+  const pre = 'p' + pi + '.s' + i + '.end.';
+  const shared = mate ? ' (shared with Pipe ' + (mate.pipe + 1) + ')' : '';
   const list = [{
-    kind: 'enum', key: pre + 'type', label: 'End treatment', hint: '',
-    options: [
-      { value: 'plain', label: 'Plain' },
-      { value: 'chamfer', label: 'Chamfer' },
-      { value: 'flange', label: 'Flange' },
-      { value: 'barb', label: 'Hose Barb' },
-      { value: 'teeth', label: 'Teeth' },
-      { value: 'fit', label: 'Slip Joint' },
-    ],
+    kind: 'enum', key: pre + 'type',
+    label: mate ? 'End treatment — joins Pipe ' + (mate.pipe + 1) : 'End treatment', hint: '',
+    options: mate
+      ? END_TREATMENT_OPTIONS.filter((o) => geo.MATE_TYPES.includes(o.value))
+      : END_TREATMENT_OPTIONS,
   }];
   if (end.type === 'chamfer') {
     const secLen = sec.l;   // along-axis cap
@@ -675,10 +836,12 @@ function endControls(i) {
     list.push(numCtrl(pre + 'ChIY', 'Bore chamfer — Y, radial', 'mm', 0.1, false, wall));
   }
   if (end.type === 'flange') {
-    list.push(numCtrl(pre + 'Fw', 'Flange width', 'mm', 0.5));
+    // Two mating flanges must bolt together, so width, hole count and hole size
+    // move as one across the joint. Thickness is each part's own.
+    list.push(numCtrl(pre + 'Fw', 'Flange width' + shared, 'mm', 0.5));
     list.push(numCtrl(pre + 'Ft', 'Flange thickness', 'mm', 0.5));
-    list.push(numCtrl(pre + 'Fn', 'Number of holes', '', 1, true));
-    list.push(numCtrl(pre + 'Fh', 'Hole size', 'ø mm', 0.5));
+    list.push(numCtrl(pre + 'Fn', 'Number of holes' + shared, '', 1, true));
+    list.push(numCtrl(pre + 'Fh', 'Hole size' + shared, 'ø mm', 0.5));
   }
   if (end.type === 'barb') {
     list.push(numCtrl(pre + 'Bh', 'Barb height', 'mm', 0.1));
@@ -707,7 +870,11 @@ function endControls(i) {
         { value: 'outside', label: 'Outside (socket — receives)' },
       ],
     });
-    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5));   // extends past the section; not capped by its length
+    // The joint extends past its own section, so its length isn't capped by it.
+    // A spigot does have to fit the bore it plugs into, though, so at a joint it
+    // stops at the mating section's length (see capSpigot).
+    const spigotMax = (mate && end.FitSide === 'inside') ? mate.section.l : undefined;
+    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5, false, spigotMax));
     list.push(numCtrl(pre + 'FitTol', 'Tolerance (clearance)', 'mm', 0.05));
     list.push(numCtrl(pre + 'FitChX', 'Lead-in chamfer — X, along axis', 'mm', 0.1, false, end.FitL));
     list.push(numCtrl(pre + 'FitChY', 'Lead-in chamfer — Y, radial', 'mm', 0.1, false, sec.w));
@@ -715,71 +882,111 @@ function endControls(i) {
   return list;
 }
 
-// Build the panel groups: an interleaved chain of section and bend cards.
-function groupModel(g) {
+// Build the panel groups: for each pipe, a header followed by the interleaved
+// chain of its section and bend cards. The header owns the whole pipe - it
+// collapses it and, at the two ends of the chain, adds or removes one.
+function groupModel(chain) {
   const groups = [];
-  const sections = state.params.sections;
-  const bends = state.params.bends;
-  const N = sections.length;
+  const pipes = state.params.pipes;
+  const nPipes = pipes.length;
+  const atCap = nPipes >= geo.MAX_PIPES;
 
-  for (let i = 0; i < N; i++) {
-    const isFirst = i === 0, isLast = i === N - 1;
-    // Copy-from-neighbor buttons (dims + end treatment).
-    const copyActs = [];
-    if (i > 0) copyActs.push({ label: 'Mimic Previous Section', title: 'Copy the previous section onto this one', onClick: () => copySection(i, i - 1) });
-    if (i < N - 1) copyActs.push({ label: 'Mimic Next Section', title: 'Copy the next section onto this one', onClick: () => copySection(i, i + 1) });
+  for (let pi = 0; pi < nPipes; pi++) {
+    const pipe = pipes[pi];
+    const g = chain.pipes[pi];
+    const sections = pipe.sections;
+    const bends = pipe.bends;
+    const N = sections.length;
+    const firstPipe = pi === 0, lastPipe = pi === nPipes - 1;
 
-    const controls = [
-      ...(copyActs.length ? [{ kind: 'actions', key: 's' + i + '.copy', actions: copyActs }] : []),
-      numCtrl('s' + i + '.id', 'Inner Ø', 'mm', 0.5),
-      odCtrl('s' + i + '.w', sectionInner(i)),
-      { kind: 'readout', key: 's' + i + '.outer', getWall: (p) => p.sections[i].w },
-      numCtrl('s' + i + '.l', 'Length', 'mm', 1, false, undefined, sectionMinLen(sections[i])),
-      ...(isFirst || isLast ? endControls(i) : []),
-    ];
-    // Only the two end sections can add or remove: the first prepends a new
-    // first section, the last appends a new last section. (When N === 2 a section
-    // is both first and last; each still gets a single, correctly-directed add.)
+    // Only the two ends of the chain can grow: a new pipe joins the free end of
+    // the first or last pipe. (With a single pipe it is both, so it offers both
+    // directions.) Removing is likewise an end-of-chain operation, so no joint
+    // ever has to be dissolved and re-made in the middle.
+    const pipeActs = [];
+    if (lastPipe && !atCap) pipeActs.push({ label: '+ Pipe ↓', title: 'Join a new pipe to this pipe\'s far end', onClick: () => addPipe('after') });
+    if (firstPipe && !atCap) pipeActs.push({ label: '+ Pipe ↑', title: 'Join a new pipe to this pipe\'s near end', onClick: () => addPipe('before') });
     groups.push({
-      id: 's' + i, kind: 'section', index: i,
-      tag: String(i + 1), title: 'Section ' + (i + 1),
-      onAdd: isFirst ? () => addSectionBefore(0) : isLast ? () => addSectionAfter(i) : null,
-      addTitle: isFirst ? 'Add a new first section (copies this one)' : 'Add a new last section (copies this one)',
-      onRemove: ((isFirst || isLast) && N > 2) ? () => removeSection(i) : null,
-      controls,
+      id: gid(pi), kind: 'pipe', index: pi,
+      tag: 'P' + (pi + 1), title: 'Pipe ' + (pi + 1),
+      pipeHead: true,
+      actions: pipeActs,
+      onRemove: ((firstPipe || lastPipe) && nPipes > 1) ? () => removePipe(pi) : null,
+      removeTitle: 'Remove this pipe',
+      controls: [],
     });
 
-    if (i < N - 1) {
-      const bend = bends[i];
-      const bpre = 'b' + i + '.';
+    for (let i = 0; i < N; i++) {
+      const isFirst = i === 0, isLast = i === N - 1;
+      // The pipe on the other side of this end, when this end carries a joint,
+      // and the very section that faces this one across it.
+      const mateOf = (j, side) => {
+        const secs = pipes[j].sections;
+        return { pipe: j, section: side === 'l' ? secs[secs.length - 1] : secs[0] };
+      };
+      const mate = isFirst && !firstPipe ? mateOf(pi - 1, 'l')
+        : isLast && !lastPipe ? mateOf(pi + 1, 'r') : null;
+      const spre = 'p' + pi + '.s' + i + '.';
+      // Copy-from-neighbor buttons (dims + end treatment).
+      const copyActs = [];
+      if (i > 0) copyActs.push({ label: 'Mimic Previous Section', title: 'Copy the previous section onto this one', onClick: () => copySection(pi, i, i - 1) });
+      if (i < N - 1) copyActs.push({ label: 'Mimic Next Section', title: 'Copy the next section onto this one', onClick: () => copySection(pi, i, i + 1) });
+
+      const shared = mate ? ' (shared with Pipe ' + (mate.pipe + 1) + ')' : '';
+      const controls = [
+        ...(copyActs.length ? [{ kind: 'actions', key: spre + 'copy', actions: copyActs }] : []),
+        numCtrl(spre + 'id', 'Inner Ø' + shared, 'mm', 0.5),
+        odCtrl(spre + 'w', sectionInner(pi, i)),
+        { kind: 'readout', key: spre + 'outer', getWall: (p) => p.pipes[pi].sections[i].w },
+        numCtrl(spre + 'l', 'Length', 'mm', 1),
+        ...(isFirst || isLast ? endControls(pi, i, mate) : []),
+      ];
+      // Only the two end sections can add or remove: the first prepends a new
+      // first section, the last appends a new last section. (When N === 2 a section
+      // is both first and last; each still gets a single, correctly-directed add.)
       groups.push({
-        id: 'b' + i, kind: 'bend', index: i,
-        tag: '∿', title: 'Bend ' + (i + 1),
-        presets: [-90, -45, -22.5, -11.25, 0, 11.25, 22.5, 45, 90], presetKey: bpre + 'ang',
-        controls: [
-          numCtrl(bpre + 'ang', 'Bend angle', 'deg', 1),
-          bendLenCtrl(bpre + 'l2', g.path.bends[i]),
-          { kind: 'toggle', key: bpre + 'idmSmooth', label: 'Continuous Ø', title: 'Blend the inner diameter smoothly across this bend' },
-          ...(bend.idmSmooth ? [] : [
-            numCtrl(bpre + 'idm', 'Inner Ø', 'mm', 0.5),
-            { kind: 'actions', key: bpre + 'idmmatch', actions: [
-              { label: 'Set to Left', title: 'Match the left neighbor\'s inner diameter', onClick: () => setBend(i, 'idm', 'id', 'left') },
-              { label: 'Set in Between', title: 'Average of the two neighbors\' inner diameters', onClick: () => setBend(i, 'idm', 'id', 'between') },
-              { label: 'Set to Right', title: 'Match the right neighbor\'s inner diameter', onClick: () => setBend(i, 'idm', 'id', 'right') },
-            ] },
-          ]),
-          { kind: 'toggle', key: bpre + 'w2Smooth', label: 'Continuous thickness', title: 'Blend the wall thickness smoothly across this bend' },
-          ...(bend.w2Smooth ? [] : [
-            odCtrl(bpre + 'w2', bendInner(i)),
-            { kind: 'actions', key: bpre + 'w2match', actions: [
-              { label: 'Set to Left', title: 'Match the left neighbor\'s wall thickness', onClick: () => setBend(i, 'w2', 'w', 'left') },
-              { label: 'Set in Between', title: 'Average of the two neighbors\' wall thicknesses', onClick: () => setBend(i, 'w2', 'w', 'between') },
-              { label: 'Set to Right', title: 'Match the right neighbor\'s wall thickness', onClick: () => setBend(i, 'w2', 'w', 'right') },
-            ] },
-          ]),
-          { kind: 'readout', key: bpre + 'outer', getWall: bendWall(i) },
-        ],
+        id: gid(pi, 's', i), kind: 'section', index: i, pipe: pi,
+        tag: String(i + 1), title: 'Section ' + (i + 1),
+        mate: !!mate,
+        onAdd: isFirst ? () => addSectionBefore(pi, 0) : isLast ? () => addSectionAfter(pi, i) : null,
+        addTitle: isFirst ? 'Add a new first section (copies this one)' : 'Add a new last section (copies this one)',
+        onRemove: ((isFirst || isLast) && N > 2) ? () => removeSection(pi, i) : null,
+        removeTitle: 'Remove this section',
+        controls,
       });
+
+      if (i < N - 1) {
+        const bend = bends[i];
+        const bpre = 'p' + pi + '.b' + i + '.';
+        groups.push({
+          id: gid(pi, 'b', i), kind: 'bend', index: i, pipe: pi,
+          tag: '∿', title: 'Bend ' + (i + 1),
+          presets: [-90, -45, -22.5, -11.25, 0, 11.25, 22.5, 45, 90], presetKey: bpre + 'ang',
+          controls: [
+            numCtrl(bpre + 'ang', 'Bend angle', 'deg', 1),
+            bendLenCtrl(bpre + 'l2', g.path.bends[i]),
+            { kind: 'toggle', key: bpre + 'idmSmooth', label: 'Continuous Ø', title: 'Blend the inner diameter smoothly across this bend' },
+            ...(bend.idmSmooth ? [] : [
+              numCtrl(bpre + 'idm', 'Inner Ø', 'mm', 0.5),
+              { kind: 'actions', key: bpre + 'idmmatch', actions: [
+                { label: 'Set to Left', title: 'Match the left neighbor\'s inner diameter', onClick: () => setBend(pi, i, 'idm', 'id', 'left') },
+                { label: 'Set in Between', title: 'Average of the two neighbors\' inner diameters', onClick: () => setBend(pi, i, 'idm', 'id', 'between') },
+                { label: 'Set to Right', title: 'Match the right neighbor\'s inner diameter', onClick: () => setBend(pi, i, 'idm', 'id', 'right') },
+              ] },
+            ]),
+            { kind: 'toggle', key: bpre + 'w2Smooth', label: 'Continuous thickness', title: 'Blend the wall thickness smoothly across this bend' },
+            ...(bend.w2Smooth ? [] : [
+              odCtrl(bpre + 'w2', bendInner(pi, i)),
+              { kind: 'actions', key: bpre + 'w2match', actions: [
+                { label: 'Set to Left', title: 'Match the left neighbor\'s wall thickness', onClick: () => setBend(pi, i, 'w2', 'w', 'left') },
+                { label: 'Set in Between', title: 'Average of the two neighbors\' wall thicknesses', onClick: () => setBend(pi, i, 'w2', 'w', 'between') },
+                { label: 'Set to Right', title: 'Match the right neighbor\'s wall thickness', onClick: () => setBend(pi, i, 'w2', 'w', 'right') },
+              ] },
+            ]),
+            { kind: 'readout', key: bpre + 'outer', getWall: bendWall(pi, i) },
+          ],
+        });
+      }
     }
   }
   return groups;
@@ -793,19 +1000,32 @@ let panelSig = '';
 let panelBuilt = false;              // false until the first build, which starts every group collapsed
 const collapsedGroups = new Set();   // group ids whose body is collapsed (persists across rebuilds)
 
-// Group ids are positional (s<i>/b<i>), so an insert or remove that renumbers
-// sections/bends has to renumber the stored collapsed ids in step - otherwise a
-// collapsed state stays pinned to an index and jumps to whichever group lands
-// there. Shift every `prefix` ('s' or 'b') id at or past `from` by `delta`.
-function shiftCollapsed(prefix, from, delta) {
+// Group ids are positional - p<j> for a whole pipe, p<j>s<i> / p<j>b<i> for a
+// section or bend inside it - so an insert or remove that renumbers anything
+// has to renumber the stored collapsed ids in step; otherwise a collapsed state
+// stays pinned to an index and jumps to whichever group lands there.
+const gid = (pi, prefix, i) => 'p' + pi + (prefix || '') + (i === undefined ? '' : i);
+function parseGroupId(id) {
+  const m = /^p(\d+)(?:([sb])(\d+))?$/.exec(id);
+  return m ? { pi: +m[1], prefix: m[2] || null, i: m[3] === undefined ? null : +m[3] } : null;
+}
+function remapCollapsed(fn) {
   const next = new Set();
   for (const id of collapsedGroups) {
-    const m = /^([sb])(\d+)$/.exec(id);
-    if (m && m[1] === prefix && +m[2] >= from) next.add(m[1] + (+m[2] + delta));
-    else next.add(id);
+    const g = parseGroupId(id);
+    next.add(g ? (fn(g) || id) : id);
   }
   collapsedGroups.clear();
   next.forEach((id) => collapsedGroups.add(id));
+}
+// Shift every `prefix` ('s' or 'b') id at or past `from`, within one pipe.
+function shiftCollapsed(pi, prefix, from, delta) {
+  remapCollapsed((g) => (g.pi === pi && g.prefix === prefix && g.i >= from
+    ? gid(pi, prefix, g.i + delta) : null));
+}
+// Shift whole pipes - every id belonging to pipe `from` or later, header included.
+function shiftCollapsedPipes(from, delta) {
+  remapCollapsed((g) => (g.pi >= from ? gid(g.pi + delta, g.prefix, g.i === null ? undefined : g.i) : null));
 }
 
 // Collapse or expand every group at once (the panel toolbar). Updates the live
@@ -818,6 +1038,16 @@ function setAllCollapsed(collapsed) {
     if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
     if (collapsed) collapsedGroups.add(section.getAttribute('data-group-id'));
   });
+  // Expanding means "show me everything", so folded-away pipes open back up.
+  // Collapsing leaves them alone - their cards are already folded, and hiding
+  // the outline as well would be a bigger hammer than the button promises.
+  if (!collapsed) {
+    el.panelGrid.querySelectorAll('.pipe-block').forEach((block) => {
+      block.classList.remove('collapsed');
+      const toggle = block.querySelector('.group-toggle');
+      if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    });
+  }
 }
 
 // Which pipe segment the pointer is over (drives the schematic highlight):
@@ -932,55 +1162,79 @@ function h(tag, cls, attrs) {
   return node;
 }
 
+// A collapsing header row: the caret/tag/title toggle plus its trailing
+// buttons. `node` is the element whose `collapsed` class the toggle drives, so
+// the same row serves a single group card and a whole pipe block.
+function groupHead(g, node, cls) {
+  const collapsed = collapsedGroups.has(g.id);
+  const head = h('div', 'group-head' + (cls ? ' ' + cls : ''));
+  const toggle = h('button', 'group-toggle', { type: 'button', 'aria-expanded': String(!collapsed) });
+  const caret = h('span', 'group-caret'); caret.textContent = '▾';
+  const tag = h('span', 'group-tag'); tag.textContent = g.tag;
+  const title = h('span', 'group-title'); title.textContent = g.title;
+  toggle.append(caret, tag, title);
+  toggle.addEventListener('click', () => {
+    const nowCollapsed = !collapsedGroups.has(g.id);
+    if (nowCollapsed) collapsedGroups.add(g.id); else collapsedGroups.delete(g.id);
+    node.classList.toggle('collapsed', nowCollapsed);
+    toggle.setAttribute('aria-expanded', String(!nowCollapsed));
+  });
+  head.append(toggle, h('span', 'group-rule'));
+  if (g.onRemove) {
+    const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: g.removeTitle || 'Remove' });
+    btn.textContent = '✕';
+    btn.addEventListener('click', g.onRemove);
+    head.append(btn);
+  }
+  for (const act of (g.actions || [])) {
+    const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: act.title || '' });
+    btn.textContent = act.label;
+    btn.addEventListener('click', act.onClick);
+    head.append(btn);
+  }
+  if (g.onAdd) {
+    const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: g.addTitle || 'Add a section' });
+    btn.textContent = '+ Section';
+    btn.addEventListener('click', g.onAdd);
+    head.append(btn);
+  }
+  return head;
+}
+
 function buildPanel(groups) {
-  // The panel opens fully collapsed, so the part - not the controls - is the
-  // first thing you see. Seeding the set on the first build (rather than
+  // The panel opens with every card collapsed, so the part - not the controls -
+  // is the first thing you see. Seeding the set on the first build (rather than
   // special-casing the render) means everything after it, including a rebuild
-  // triggered by adding a section, follows the normal persistence rules.
+  // triggered by adding a section, follows the normal persistence rules. Pipe
+  // headers are left open: collapsing those would hide the outline too.
   if (!panelBuilt) {
     panelBuilt = true;
-    groups.forEach((g) => collapsedGroups.add(g.id));
+    groups.forEach((g) => { if (!g.pipeHead) collapsedGroups.add(g.id); });
   }
   el.panelGrid.replaceChildren();
+  // Each pipe's cards live inside its own block, so its header can fold the
+  // whole pipe away. Groups arrive in order, headed by their pipe.
+  let host = el.panelGrid;
   for (const g of groups) {
+    if (g.pipeHead) {
+      host = h('div', 'pipe-block', { 'data-group-id': g.id });
+      if (collapsedGroups.has(g.id)) host.classList.add('collapsed');
+      const seg = { pipe: g.index, kind: 'pipe', index: g.index };
+      host.addEventListener('mouseenter', () => { hoveredSection = seg; drawSchematic(); });
+      host.addEventListener('mouseleave', () => { if (hoveredSection === seg) { hoveredSection = null; drawSchematic(); } });
+      host.append(groupHead(g, host, 'pipe-head'));
+      el.panelGrid.append(host);
+      continue;
+    }
     const section = h('section', 'group', { 'data-group-id': g.id });
-    const collapsed = collapsedGroups.has(g.id);
-    if (collapsed) section.classList.add('collapsed');
+    if (collapsedGroups.has(g.id)) section.classList.add('collapsed');
 
     // Hovering a group's controls highlights that segment in the schematic.
-    const seg = { kind: g.kind, index: g.index };
+    const seg = { pipe: g.pipe, kind: g.kind, index: g.index };
     section.addEventListener('mouseenter', () => { hoveredSection = seg; drawSchematic(); });
     section.addEventListener('mouseleave', () => { if (hoveredSection === seg) { hoveredSection = null; drawSchematic(); } });
 
-    // The tag + title form a toggle button that collapses the section body.
-    const head = h('div', 'group-head');
-    const toggle = h('button', 'group-toggle', { type: 'button', 'aria-expanded': String(!collapsed) });
-    const caret = h('span', 'group-caret'); caret.textContent = '▾';
-    const tag = h('span', 'group-tag'); tag.textContent = g.tag;
-    const title = h('span', 'group-title'); title.textContent = g.title;
-    toggle.append(caret, tag, title);
-    toggle.addEventListener('click', () => {
-      const nowCollapsed = !collapsedGroups.has(g.id);
-      if (nowCollapsed) collapsedGroups.add(g.id); else collapsedGroups.delete(g.id);
-      section.classList.toggle('collapsed', nowCollapsed);
-      toggle.setAttribute('aria-expanded', String(!nowCollapsed));
-    });
-    head.append(toggle, h('span', 'group-rule'));
-    // Section cards can add a section after themselves, or (when more than two
-    // remain) remove themselves.
-    if (g.onRemove) {
-      const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: 'Remove this section' });
-      btn.textContent = '✕';
-      btn.addEventListener('click', g.onRemove);
-      head.append(btn);
-    }
-    if (g.onAdd) {
-      const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: g.addTitle || 'Add a section' });
-      btn.textContent = '+ Section';
-      btn.addEventListener('click', g.onAdd);
-      head.append(btn);
-    }
-    section.append(head);
+    section.append(groupHead(g, section));
 
     const body = h('div', 'group-body');
     if (g.presets) {
@@ -1081,7 +1335,7 @@ function buildPanel(groups) {
       body.append(field);
     }
     section.append(body);
-    el.panelGrid.append(section);
+    host.append(section);
   }
 }
 
@@ -1099,9 +1353,12 @@ function updatePanelValues(groups) {
       }
       if (c.kind === 'readout') {
         const rd = el.panelGrid.querySelector(`[data-readout="${c.key}"]`);
-        // Blends the neighbors when Continuous thickness is on (see getWall).
-        const wall = toDisp(c.getWall(p));
-        if (rd) rd.textContent = 'wall ' + wall.toFixed(inchMode() ? 3 : 1) + ' ' + unitSuffix();
+        // `text` writes its own line; otherwise it's a wall readout, which
+        // blends the neighbors when Continuous thickness is on (see getWall).
+        if (rd) {
+          rd.textContent = c.text ? c.text(p)
+            : 'wall ' + toDisp(c.getWall(p)).toFixed(inchMode() ? 3 : 1) + ' ' + unitSuffix();
+        }
         continue;
       }
       if (c.kind === 'enum') {
@@ -1257,10 +1514,15 @@ function render() {
 
   if (g) {
     const p = state.params;
-    const secs = p.sections, nBend = p.bends.length;
+    const pipes = p.pipes;
+    const firstSec = pipes[0].sections[0];
+    const lastPipe = pipes[pipes.length - 1];
+    const lastSec = lastPipe.sections[lastPipe.sections.length - 1];
+    const nBend = pipes.reduce((n, pp) => n + pp.bends.length, 0);
     el.summary.textContent =
-      'ø' + dRaw(secs[0].id) + ' → ø' + dRaw(secs[secs.length - 1].id) + '  ·  ' +
-      nBend + (nBend === 1 ? ' bend' : ' bends') + '  ·  ' + dv(g.path.total) + ' ' + uSuf + ' along centerline';
+      'ø' + dRaw(firstSec.id) + ' → ø' + dRaw(lastSec.id) + '  ·  ' +
+      (pipes.length > 1 ? pipes.length + ' pipes  ·  ' : '') +
+      nBend + (nBend === 1 ? ' bend' : ' bends') + '  ·  ' + dv(g.total) + ' ' + uSuf + ' along centerline';
     el.bbox.textContent =
       dv(g.bbox.size[0]) + ' × ' + dv(g.bbox.size[1]) + ' × ' + dv(g.bbox.size[2]) + ' ' + uSuf;
     el.mesh.textContent = g.triCount.toLocaleString() + ' facets in preview · 160-segment export';
@@ -1272,13 +1534,19 @@ function render() {
       el.notes.append(div);
     }
 
-    // panel: rebuild only when the control set changes (section count, end types,
-    // and each bend's continuity toggles all affect which controls exist).
+    // panel: rebuild only when the control set changes (pipe and section counts,
+    // end types, and each bend's continuity toggles all affect which controls exist).
     const groups = groupModel(g);
+    // A slip joint's side rides along: it doesn't change which controls exist,
+    // but it does change what the joint-length control is called.
+    const endSig = (e) => e.type + (e.type === 'fit' ? e.FitSide : '');
     const sig = [
-      state.units, state.layout, secs.length,
-      secs[0].end.type, secs[secs.length - 1].end.type,
-      p.bends.map((b) => b.idmSmooth + '' + b.w2Smooth).join(','),
+      state.units, state.layout, pipes.length,
+      pipes.map((pp) => [
+        pp.sections.length,
+        endSig(pp.sections[0].end), endSig(pp.sections[pp.sections.length - 1].end),
+        pp.bends.map((b) => b.idmSmooth + '' + b.w2Smooth).join(','),
+      ].join('/')).join(';'),
     ].join('|');
     if (sig !== panelSig) { buildPanel(groups); panelSig = sig; }
     updatePanelValues(groups);
@@ -1491,10 +1759,10 @@ function setRenderStyle(name) {
   if (!RENDER_STYLES[name]) name = 'steel';
   renderStyle = name;
   writeHash(state.params);   // record the choice in the URL (#render=...)
-  if (mesh) {
-    const old = mesh.material;
-    mesh.material = makeMaterial(name);
-    material = mesh.material;
+  if (meshGroup) {
+    const old = material;
+    material = makeMaterial(name);
+    for (const m of meshes) m.material = material;   // every pipe is the same stock
     if (old) old.dispose();
     draw();
   }
@@ -1630,8 +1898,8 @@ function initThree() {
   scene.environment = makeEnvironment();   // image-based reflections so materials aren't flat
 
   material = makeMaterial(renderStyle);
-  mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
-  scene.add(mesh);
+  meshGroup = new THREE.Group();
+  scene.add(meshGroup);
 
   makeGrid(gridStep, gridCells);
 
@@ -1652,16 +1920,13 @@ function initThree() {
   setTimeout(() => { if (!hasCustomView) { framed = false; syncMesh(); } }, 60);
 }
 
-function syncMesh(first) {
-  const g = geometry();
-  if (!g || !mesh) return;
+// Turn one built pipe into a three.js geometry, shifted by the whole
+// assembly's offset so every part keeps its place relative to the others.
+function pipeBufferGeometry(g, dx, dy, dz) {
   const bg = new THREE.BufferGeometry();
   const pos = g.positions.slice();
-  const cx = (g.bbox.min[0] + g.bbox.max[0]) / 2;
-  const cz = (g.bbox.min[2] + g.bbox.max[2]) / 2;
-  const my = g.bbox.min[1];
   for (let i = 0; i < pos.length; i += 3) {
-    pos[i] -= cx; pos[i + 1] -= my; pos[i + 2] -= cz;
+    pos[i] -= dx; pos[i + 1] -= dy; pos[i + 2] -= dz;
   }
   bg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   if (g.uv) bg.setAttribute('uv', new THREE.BufferAttribute(g.uv.slice(), 2));   // for the bump-map texture
@@ -1679,8 +1944,32 @@ function syncMesh(first) {
     }
     bg.attributes.normal.needsUpdate = true;
   }
-  mesh.geometry.dispose();
-  mesh.geometry = bg;
+  return bg;
+}
+
+function syncMesh(first) {
+  const g = geometry();
+  if (!g || !meshGroup) return;
+  // The whole assembly is centered on the origin and set on the floor as one
+  // piece, so the parts stay mated rather than each being centered.
+  const cx = (g.bbox.min[0] + g.bbox.max[0]) / 2;
+  const cz = (g.bbox.min[2] + g.bbox.max[2]) / 2;
+  const my = g.bbox.min[1];
+  while (meshes.length > g.pipes.length) {
+    const m = meshes.pop();
+    meshGroup.remove(m);
+    m.geometry.dispose();
+  }
+  while (meshes.length < g.pipes.length) {
+    const m = new THREE.Mesh(new THREE.BufferGeometry(), material);
+    meshGroup.add(m);
+    meshes.push(m);
+  }
+  g.pipes.forEach((gp, j) => {
+    const bg = pipeBufferGeometry(gp, cx, my, cz);
+    meshes[j].geometry.dispose();
+    meshes[j].geometry = bg;
+  });
 
   span = Math.max(g.bbox.size[0], g.bbox.size[1], g.bbox.size[2]);
   if (first || !framed) {
@@ -1912,13 +2201,13 @@ function closestGridPoint(ray) {
 // The offset projection (setViewOffset) is baked into the camera's matrices, so
 // plain [-1,1] NDC unprojects correctly.
 function pickPivotPoint(clientX, clientY) {
-  if (!mesh || !camera || !renderer) return null;
+  if (!meshes.length || !camera || !renderer) return null;
   const r = renderer.domElement.getBoundingClientRect();
   if (!r.width || !r.height) return null;
   _ndc.x = ((clientX - r.left) / r.width) * 2 - 1;
   _ndc.y = -((clientY - r.top) / r.height) * 2 + 1;
   _raycaster.setFromCamera(_ndc, camera);
-  const hit = _raycaster.intersectObject(mesh, false)[0];
+  const hit = _raycaster.intersectObjects(meshes, false)[0];
   if (hit) return hit.point.clone();
   return closestGridPoint(_raycaster.ray);
 }
@@ -2011,7 +2300,7 @@ function scheduleFavicon() {
 
 function paintFavicon() {
   favTimer = null;
-  const pos = mesh && mesh.geometry.getAttribute('position');
+  const pos = meshes.length && meshes[0].geometry.getAttribute('position');
   if (!renderer || !pos || !pos.count) return;
   try {
     if (!favTarget) {
@@ -2034,9 +2323,9 @@ function paintFavicon() {
     // Frame the whole part: the viewer's pan, zoom and offset projection are
     // about fitting a big canvas around a floating card, none of which applies
     // here. Only the orbit direction carries over.
-    const g = mesh.geometry;
-    if (!g.boundingSphere) g.computeBoundingSphere();
-    const s = g.boundingSphere;
+    // Frame every pipe, not just the first - the icon is the whole assembly.
+    const s = new THREE.Box3().setFromObject(meshGroup).getBoundingSphere(new THREE.Sphere());
+    if (!(s.radius > 0)) return;
     const dist = (s.radius / Math.sin((favCam.fov * Math.PI) / 360)) * 1.08;   // 8% breathing room
     favCam.position.copy(s.center).addScaledVector(dirToCam(), dist);
     favCam.lookAt(s.center);

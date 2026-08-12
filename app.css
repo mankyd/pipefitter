@@ -247,6 +247,14 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .panel-toolbar .panel-side:hover { color: var(--color-text); }
 .panel-grid { display: grid; gap: var(--space-8); padding: var(--space-6); }
 
+/* One pipe's cards, gathered under a header that folds the whole part away. */
+.pipe-block { display: flex; flex-direction: column; gap: var(--space-8); min-width: 0; }
+.pipe-block.collapsed > .group { display: none; }
+.pipe-block.collapsed .pipe-head .group-caret { transform: rotate(-90deg); }
+.pipe-head { padding-bottom: 0; }
+.pipe-head .group-title { font-size: 14px; color: var(--color-neutral-200); }
+.pipe-head .group-rule { background: linear-gradient(90deg, var(--color-neutral-700), transparent); }
+
 .group { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .group-head {
   display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2);

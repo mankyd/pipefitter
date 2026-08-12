@@ -930,10 +930,11 @@ function endControls(pi, i, slot, mate) {
       ],
     });
     // The joint extends past its own section, so its length isn't capped by it.
-    // A spigot does have to fit the bore it plugs into, though, so at a joint it
-    // stops at the run the mating end owns (see capSpigot).
-    const spigotMax = (mate && end.FitSide === 'inside') ? endAvail(mate.section) : undefined;
-    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5, false, spigotMax));
+    // It does have to be met by the pipe on the other side, though, so at a
+    // joint it stops at the run the mating end owns - a socket can swallow no
+    // more of its mate than a spigot can slide up it (see capEngagement).
+    const engageMax = mate ? endAvail(mate.section) : undefined;
+    list.push(numCtrl(pre + 'FitL', 'Joint length', 'mm', 0.5, false, engageMax));
     list.push(numCtrl(pre + 'FitTol', 'Tolerance (clearance)', 'mm', 0.05));
     list.push(numCtrl(pre + 'FitChX', 'Lead-in chamfer — X, along axis', 'mm', 0.1, false, end.FitL));
     list.push(numCtrl(pre + 'FitChY', 'Lead-in chamfer — Y, radial', 'mm', 0.1, false, sec.w));

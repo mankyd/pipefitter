@@ -93,9 +93,10 @@ other follows. Their *lengths* stay independent. Beyond that:
   keeps its own **thickness**.
 - A **slip joint** shares almost nothing. The joint length, the lead-in chamfer, and especially the **tolerance** belong
   to the side carrying the treatment - raising the tolerance opens up the fit without moving the mating pipe's diameters,
-  which is exactly what you want when dialing in a slide. One limit does cross: an **Inside** (spigot) joint plugs
-  into the mating pipe's bore, so it can reach no further than that mating section's length. An **Outside** (socket) joint
-  has no such limitation.
+  which is exactly what you want when dialing in a slide. One limit does cross: the joint length can reach no further
+  than the mating section's length, whichever side carries the treatment. An **Inside** (spigot) joint plugs into the
+  mating pipe's bore, and an **Outside** (socket) joint swallows the mating pipe's end - either way the mate has only
+  its own straight run to give before its bend gets in the way.
 - A **chamfer** joint shares nothing: each end is chamfered however you like.
 
 Shared values are labelled as such in the panel. Adding a section at a mated end is allowed - the new section takes

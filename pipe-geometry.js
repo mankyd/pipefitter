@@ -34,12 +34,20 @@ export const END_LIMITS = {
 };
 export const END_TYPES = ['plain', 'chamfer', 'flange', 'barb', 'teeth', 'fit'];
 const END_WHOLE = new Set(['Fn', 'Bn', 'Tn']);
-// A slip-joint's shoulder ("stop") is a solid floor as thick as the section wall,
-// so it reads as a proper flange-like step; the tolerance gap is bridged over it.
-// Capped at half the fit length so a very short stub still has a spigot/socket,
-// and at `secLen` — the straight run the end is given (see endAvail) — so the
-// floor never outgrows the section it sits in.
-const fitFloor = (wall, L, secLen) => Math.min(wall, L * 0.5, secLen);
+// FitL is the joint's ENGAGEMENT: how far the two pipes overlap once seated -
+// a spigot's protruding stub, or the depth of a socket's cup. It is the length
+// the joint adds to its section, and the one number that describes the fit, so
+// it is what the control carries and what the drawing shows.
+//
+// Behind it sits the shoulder ("stop"): a solid floor as thick as the section
+// wall, so the step reads as a proper flange-like face rather than a knife
+// edge, with the tolerance gap bridged over it. That floor is *inside* the
+// section - the measured section length runs from the interior stop wall to the
+// far end - so it costs the engagement nothing. It is capped at the engagement
+// itself, so a hair-thin joint stays a hair thin rather than jumping to a full
+// wall of material, and at `secLen` — the straight run the end is given (see
+// endAvail) — so it never outgrows the section it sits in.
+const fitFloor = (wall, engage, secLen) => Math.min(wall, engage, secLen);
 
 // The two end slots, in path order: `endA` at the near (s=0) end of the first
 // section, `endB` at the far (s=T) end of the last one.
@@ -50,13 +58,10 @@ const endsOf = (sec) => END_SLOTS.map((k) => sec && sec[k]).filter(Boolean);
 // down the middle and neither can reach across into the other's half.
 const endAvail = (sec) => sec.l / Math.max(1, endsOf(sec).length);
 
-// The axial length one slip joint adds to its section. The stop's floor is part
-// of the section — the measured section length runs from the interior stop wall
-// to the far end — so only the protruding stub (FitL minus the floor) extends
-// past it. The section thus keeps its full length between the stop and the bend.
+// The axial length one slip joint adds to its section: exactly its engagement.
 const fitLenOf = (sec, end) => {
   if (!end || end.type !== 'fit') return 0;
-  return Math.max(0, end.FitL - fitFloor(sec.w, end.FitL, endAvail(sec)));
+  return Math.max(0, end.FitL);
 };
 // Everything a section's end treatments add to its straight span (both ends,
 // when it has two).
@@ -76,7 +81,7 @@ export function defaultEnd() {
 export function defaultBend() {
   return { ang: 45, l2: 22, idm: 16, w2: 2.2, idmSmooth: 1, w2Smooth: 1 };
 }
-export function defaultParams() {
+export function defaultPipe() {
   return {
     sections: [
       { id: 12, w: 2, l: 26, endA: defaultEnd() },
@@ -85,10 +90,13 @@ export function defaultParams() {
     bends: [defaultBend()],
   };
 }
+export function defaultParams() {
+  return { pipes: [defaultPipe()] };
+}
 export const DEFAULTS = defaultParams();
 
-// Structured deep clone of a params object (sections/bends/ends).
-export function cloneParams(p) {
+// Structured deep clone of one pipe (sections/bends/ends).
+export function clonePipe(p) {
   return {
     sections: (p.sections || []).map((s) => {
       const c = { ...s };
@@ -97,6 +105,16 @@ export function cloneParams(p) {
     }),
     bends: (p.bends || []).map((b) => ({ ...b })),
   };
+}
+// Structured deep clone of a chain. A bare { sections, bends } is accepted and
+// promoted to a one-pipe chain, so older callers and saved links still work.
+export function cloneParams(p) {
+  return { pipes: asChain(p).map(clonePipe) };
+}
+// Coerce anything into an array of pipe objects.
+function asChain(raw) {
+  if (raw && Array.isArray(raw.pipes)) return raw.pipes;
+  return [raw || {}];
 }
 
 const cnum = (v, lim, whole, dflt) => {
@@ -292,15 +310,12 @@ function fitEnd(sec, slot, index, notes) {
     const maxF = Math.min(2.5 * e.Th, 4 * halfArc);
     if (e.Tf > maxF) { e.Tf = round(maxF, 2); notes.push(label + ' tooth fillet reduced to ' + e.Tf + ' mm'); }
   } else if (e.type === 'fit') {
-    // The stub extends past the section rather than carving into it, so its
-    // length is independent of the section length (bounded only by FitL's limit).
-    // The stop's solid floor is part of the section, though, so the section can't
-    // be shorter than that floor thickness.
-    const floor = round(Math.min(wall, e.FitL * 0.5), 2);
-    if (secLen < floor) {
-      sec.l = round(floor * nEnds, 2);   // each end needs its own floor out of the section
-      notes.push(label + ' lengthened to ' + sec.l + ' mm — the slip joint stop needs that thickness');
-    }
+    // The joint extends past the section rather than carving into it, so its
+    // engagement is independent of the section length (bounded only by FitL's
+    // limit, and by the mate's bore for a spigot - see capSpigot). The stop's
+    // floor does sit inside the section, but fitFloor already keeps it within
+    // the run this end is given, so nothing here has to give.
+    //
     // A spigot's tolerance can't exceed the bore (it would invert the wall).
     if (e.FitSide === 'inside') {
       const maxTol = Math.max(0, sec.id - 2 * wall - 0.5);
@@ -310,6 +325,143 @@ function fitEnd(sec, slot, index, notes) {
     if (e.FitChY > wall) { e.FitChY = round(wall, 2); notes.push(label + ' slip joint chamfer reduced to ' + e.FitChY + ' mm by wall thickness'); }
     if (e.FitChX > e.FitL) { e.FitChX = round(e.FitL, 2); notes.push(label + ' slip joint chamfer depth limited to ' + e.FitChX + ' mm by joint length'); }
   }
+}
+
+// ── Pipe chain: joints between separately-printed pipes ──────────────────────
+// A design is a CHAIN of pipes joined end to end: { pipes: [ {sections,bends} ] }.
+// Joint j sits between pipe j's LAST section and pipe j+1's FIRST section. The
+// two pipes are separate parts - each is printed and exported on its own - but
+// the mating end is a shared interface, so the two sides are kept consistent:
+//
+//   • the mating sections always share inner Ø and wall (hence outer Ø);
+//   • the two end treatments always form a legal mating pair (see MATE_OF);
+//   • a flange joint shares width, hole count, and hole size - but NOT
+//     thickness, which is each part's own business.
+//
+// Everything else is independent: chamfer geometry, flange thickness, and a
+// slip joint's tolerance all live on one side only. That is what makes the
+// tolerance meaningful - it opens a gap against a mate whose Ø does not move.
+export const MAX_PIPES = 4;
+
+// The end treatments that can carry a joint, and what the far side becomes.
+// Only a slip joint is asymmetric: its stub needs a plain-bored mate to slide
+// into (or over), so the other side is chamfered - a lead-in the user can then
+// shape, or leave at zero for a square end.
+export const MATE_TYPES = ['plain', 'chamfer', 'flange', 'fit'];
+const MATE_OF = { plain: 'plain', chamfer: 'chamfer', flange: 'flange', fit: 'chamfer' };
+// End params a joint holds identical on both sides (beyond the section's id/w).
+const MATE_END_KEYS = { flange: ['Fw', 'Fn', 'Fh'] };
+
+// True when a pair of end types can face each other across a joint. `chamfer`
+// opposite `fit` is the slip joint seen from the plain side, so it is legal in
+// both orders - which is what lets either pipe be the one carrying the stub.
+export function mateableEnds(a, b) {
+  return MATE_OF[a] === b || (a === 'chamfer' && b === 'fit');
+}
+
+// The mating end of a pipe on the given side of a joint, as the section that
+// owns it and the slot it sits in ('l' = the pipe to the left of the joint, so
+// its last section's `endB`; 'r' = the pipe to the right, so its first
+// section's `endA`). A single-section pipe answers both from the one section,
+// which is exactly why it can sit between two joints.
+const mateSide = (pipe, side) => (side === 'l'
+  ? { sec: pipe.sections[pipe.sections.length - 1], slot: 'endB' }
+  : { sec: pipe.sections[0], slot: 'endA' });
+const endAt = (m) => m.sec[m.slot];
+
+// The axial distance the two pipes overlap at a joint: a slip joint's stub
+// slides in until the mate lands on its shoulder, so the mate is pulled back by
+// the length the stub protrudes. Flanges and butt joints meet face to face.
+function jointStub(pipeL, pipeR) {
+  const a = mateSide(pipeL, 'l'), b = mateSide(pipeR, 'r');
+  for (const m of [a, b]) {
+    const e = endAt(m);
+    if (e && e.type === 'fit') return fitLenOf(m.sec, e);
+  }
+  return 0;
+}
+
+// Force one joint's two sides into agreement, copying from `src` to `dst`
+// (each a { sec, slot } from mateSide).
+function syncJoint(src, dst) {
+  dst.sec.id = src.sec.id;
+  dst.sec.w = src.sec.w;
+  const se = endAt(src), de = endAt(dst);
+  if (!se || !de) return;
+  // The far side follows the near side's type, unless the pair is already legal
+  // (a chamfer facing a slip joint - the stub simply lives on the other pipe).
+  if (!mateableEnds(se.type, de.type)) de.type = MATE_OF[se.type] || 'plain';
+  for (const k of (MATE_END_KEYS[se.type] || [])) {
+    if (de.type === se.type) de[k] = se[k];
+  }
+}
+
+// A spigot plugs INTO its mate's bore, so it can reach no further than the
+// straight run it slides into: past that the bore runs on into the mate's bend,
+// where a stub would foul rather than seat. Since FitL is the engagement, that
+// is simply the run the mating end owns - the whole mating section, or half of
+// it when that lone section carries a treatment on each side. Only the inside
+// (male) side is bounded this way: a socket receives the mate instead of
+// entering it, so nothing over there limits how deep it can be. With no pipe
+// joined on there is nothing to enter, and the joint length stays free.
+//
+// The pull-back is stored rather than noted, like every other clamp that keeps
+// a value legal: the joint-length control's bound moves with the mating
+// section, so the limit shows up where it is edited.
+function capSpigot(pipes, j) {
+  const cap = (m, mate) => {
+    const e = endAt(m);
+    if (!e || e.type !== 'fit' || e.FitSide !== 'inside') return;
+    const room = endAvail(mate.sec);
+    if (e.FitL > room) e.FitL = round(room, 2);
+  };
+  const a = mateSide(pipes[j], 'l'), b = mateSide(pipes[j + 1], 'r');
+  cap(a, b);
+  cap(b, a);
+}
+
+// Propagate every joint's locked values across the chain. `driver`, when given,
+// names the section the user just edited ({ pi, si }) so that joint copies OUT
+// of the edited side; every other joint flows left to right.
+//
+// A single-section pipe meets both of its joints with the same section, so a
+// joint fed backwards into one can knock the joint beyond it out of agreement.
+// The sweeps below therefore run outward from the driven joint - back through
+// any lone sections it passes through, forward everywhere else - so no joint
+// ever undoes one already settled, and a single pass still does it.
+function syncJoints(pipes, driver) {
+  const doJoint = (j, fromRight) => {
+    const a = mateSide(pipes[j], 'l'), b = mateSide(pipes[j + 1], 'r');
+    if (fromRight) syncJoint(b, a); else syncJoint(a, b);
+    capSpigot(pipes, j);
+  };
+  // Editing a pipe's first section drives the joint on its left from the right.
+  const rev = driver && driver.si === 0 && driver.pi > 0 ? driver.pi - 1 : -1;
+  let stop = rev;   // how far back that backwards flow carries
+  while (stop > 0 && pipes[stop].sections.length === 1) stop--;
+  for (let j = 0; j < stop; j++) doJoint(j, false);
+  for (let j = rev; j >= stop && j >= 0; j--) doJoint(j, true);
+  for (let j = rev + 1; j < pipes.length - 1; j++) doJoint(j, false);
+}
+
+// Prefix a per-pipe note with the pipe it belongs to, but only once the design
+// has more than one pipe (a single pipe needs no disambiguation).
+const pipeNote = (j, n, note) => (n > 1 ? 'Pipe ' + (j + 1) + ' · ' + note : note);
+
+// Clamp a whole chain: normalize each pipe, settle the joints, then normalize
+// again so a value pushed across a joint lands inside its own pipe's limits.
+// The second pass is stable - every synced quantity is clamped from synced
+// inputs alone, so both sides of a joint arrive at the same answer.
+export function normalizeChain(raw, driver) {
+  const pipes = asChain(raw).slice(0, MAX_PIPES).map((pp) => normalize(pp).p);
+  syncJoints(pipes, driver);
+  const notes = [];
+  const out = pipes.map((pp, j) => {
+    const r = normalize(pp);
+    for (const n of r.notes) notes.push(pipeNote(j, pipes.length, n));
+    return r.p;
+  });
+  return { p: { pipes: out }, notes };
 }
 
 // The diameter/wall transition a bend owns, resolved between its two neighbors.
@@ -1048,17 +1200,17 @@ function endFeature(end, baseOuter, sec) {
     // spigot (outer steps DOWN to the stub, lead-in chamfer on the outer tip).
     // Outside → female socket (outer steps UP; the bore is chamfered instead).
     const st = fitStub(end, sec);
-    const L = end.FitL, floor = fitFloor(st.w, L, secLen);
+    const E = end.FitL, floor = fitFloor(st.w, E, secLen);
     if (st.side === 'inside') {
-      const cx = Math.min(end.FitChX, L - floor), cy = end.FitChY;
+      const cx = Math.min(end.FitChX, E), cy = end.FitChY;
       if (cx > 0 && cy > 0) pts.push({ d: 0, r: st.sO - cy }, { d: cx, r: st.sO });
       else pts.push({ d: 0, r: st.sO });
-      pts.push({ d: L - floor, r: st.sO });   // spigot outer runs to the stop
-      pts.push({ d: L - floor, r: O });        // stop: outer step up to the body (zone ends here)
+      pts.push({ d: E, r: st.sO });            // spigot outer runs to the stop
+      pts.push({ d: E, r: O });                // stop: outer step up to the body (zone ends here)
     } else {
       pts.push({ d: 0, r: st.sO });            // socket outer (no outer chamfer)
-      pts.push({ d: L, r: st.sO });            // runs through the floor
-      pts.push({ d: L, r: O });                // collar step to the body
+      pts.push({ d: E + floor, r: st.sO });    // past the stop, through the floor behind it
+      pts.push({ d: E + floor, r: O });        // collar step to the body
     }
   } else {
     pts.push({ d: 0, r: O });
@@ -1072,7 +1224,7 @@ function innerEndFeature(end, baseInner, sec) {
   const secLen = endAvail(sec);   // the straight run this end may occupy
   if (end.type === 'fit' && end.FitL > 0) {
     const st = fitStub(end, sec);
-    const L = end.FitL, floor = fitFloor(st.w, L, secLen);
+    const E = end.FitL;
     if (st.side === 'inside') {
       // Spigot bore runs straight through the insertion length, then opens back
       // out to the body bore as one gradual taper spanning the whole inside of
@@ -1080,15 +1232,15 @@ function innerEndFeature(end, baseInner, sec) {
       // The taper reaches the body bore at the far (bend) junction of the span -
       // or, on a section with two ends, at the midpoint where the other end's
       // zone begins.
-      return [{ d: 0, r: st.sI }, { d: L - floor, r: st.sI }, { d: secLen + L - floor, r: st.I }];
+      return [{ d: 0, r: st.sI }, { d: E, r: st.sI }, { d: secLen + E, r: st.I }];
     }
     // Socket bore = stub bore with a lead-in flare, running to the stop where it
     // steps DOWN to the body bore (the mate bottoms against that shoulder).
-    const cx = Math.min(end.FitChX, L - floor), cy = end.FitChY, pts = [];
+    const cx = Math.min(end.FitChX, E), cy = end.FitChY, pts = [];
     if (cx > 0 && cy > 0) pts.push({ d: 0, r: st.sI + cy }, { d: cx, r: st.sI });
     else pts.push({ d: 0, r: st.sI });
-    pts.push({ d: L - floor, r: st.sI });
-    pts.push({ d: L - floor, r: st.I });
+    pts.push({ d: E, r: st.sI });
+    pts.push({ d: E, r: st.I });
     return pts;
   }
   if (end.type !== 'chamfer') return [{ d: 0, r: baseInner }];
@@ -1576,6 +1728,97 @@ export function build(raw, radialSegments) {
   };
 }
 
+// ── Assembly ─────────────────────────────────────────────────────────────────
+// Each pipe is built on its own, starting at the origin and heading along +x
+// with its bends in the z=0 plane. Placing pipe j+1 is therefore a single rigid
+// motion in that plane: rotate it to leave along its neighbour's exit tangent,
+// and drop its start point on the neighbour's mating face. Since every pipe
+// shares the one bend plane, the assembly stays planar - which is what keeps
+// the 2D schematic able to draw the whole chain.
+//
+// A placement is { th, c, s, ox, oy }: rotate (x,y) by th about the z axis
+// (the axis the tube rings are swept around), then translate. z is untouched.
+
+// Where each pipe sits, resolved left to right from the first pipe at identity.
+function placeChain(paramPipes, built) {
+  const out = [{ th: 0, c: 1, s: 0, ox: 0, oy: 0 }];
+  for (let j = 1; j < built.length; j++) {
+    const prev = out[j - 1];
+    // The neighbour's exit frame, still in ITS OWN coordinates - every pipe is
+    // placed before any geometry is moved, so these are all local reads.
+    const e = built[j - 1].endPoints[1];
+    const back = jointStub(paramPipes[j - 1], paramPipes[j]);
+    // The point this pipe's origin lands on, in the neighbour's frame: its face,
+    // walked back along the tangent by however far a slip-joint stub protrudes.
+    const qx = e.P[0] - back * e.T[0], qy = e.P[1] - back * e.T[1];
+    const th = prev.th + Math.atan2(e.T[1], e.T[0]);
+    out.push({
+      th, c: Math.cos(th), s: Math.sin(th),
+      ox: prev.ox + prev.c * qx - prev.s * qy,
+      oy: prev.oy + prev.s * qx + prev.c * qy,
+    });
+  }
+  return out;
+}
+
+// Move one built pipe into assembly coordinates, in place. Everything the app
+// consumes downstream - mesh, schematic, export orientation - is left in the
+// same space, so nothing past this point has to know about placement.
+function placeGeometry(g, pl) {
+  if (!pl.th && !pl.ox && !pl.oy) return g;
+  const { c, s, ox, oy } = pl;
+  const pt = (q) => { const x = q[0], y = q[1]; q[0] = ox + c * x - s * y; q[1] = oy + s * x + c * y; };
+  const vec = (q) => { const x = q[0], y = q[1]; q[0] = c * x - s * y; q[1] = s * x + c * y; };
+  const P = g.positions;
+  for (let i = 0; i < P.length; i += 3) {
+    const x = P[i], y = P[i + 1];
+    P[i] = ox + c * x - s * y; P[i + 1] = oy + s * x + c * y;   // z (P[i+2]) is the rotation axis
+  }
+  for (const side of [g.silhouette.outer, g.silhouette.inner]) { side.top.forEach(pt); side.bot.forEach(pt); }
+  g.silhouette.center.forEach(pt);
+  for (const sec of g.path.sections) { pt(sec.p0); pt(sec.p1); pt(sec.lp0); pt(sec.lp1); vec(sec.t); }
+  for (const bd of g.path.bends) { pt(bd.p0); pt(bd.p1); vec(bd.t0); vec(bd.t1); if (bd.center) pt(bd.center); }
+  for (const ep of g.endPoints) { pt(ep.P); vec(ep.T); }
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < P.length; i += 3) {
+    for (let k = 0; k < 3; k++) { if (P[i + k] < mn[k]) mn[k] = P[i + k]; if (P[i + k] > mx[k]) mx[k] = P[i + k]; }
+  }
+  g.bbox = { min: mn, max: mx, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]] };
+  return g;
+}
+
+// Build a whole chain: every pipe meshed on its own, then assembled. `driver`
+// (the { pi, si } of the section the user just edited) steers which side of
+// each joint wins - see syncJoints.
+export function buildChain(raw, radialSegments, driver) {
+  const { p } = normalizeChain(raw, driver);
+  const n = p.pipes.length;
+  const notes = [];
+  const pipes = p.pipes.map((pp, j) => {
+    const g = build(pp, radialSegments);
+    for (const note of g.notes) notes.push(pipeNote(j, n, note));
+    return g;
+  });
+  const placements = placeChain(p.pipes, pipes);
+  pipes.forEach((g, j) => placeGeometry(g, placements[j]));
+
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  let triCount = 0, total = 0;
+  for (const g of pipes) {
+    for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], g.bbox.min[k]); mx[k] = Math.max(mx[k], g.bbox.max[k]); }
+    triCount += g.triCount;
+    total += g.path.total;
+  }
+  // Assembled, a slip joint's stub lies inside its mate rather than adding to
+  // the run, so the chain is shorter than its pipes laid end to end.
+  for (let j = 1; j < n; j++) total -= jointStub(p.pipes[j - 1], p.pipes[j]);
+  return {
+    p, notes, pipes, placements,
+    bbox: { min: mn, max: mx, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]] },
+    triCount, total,
+  };
+}
+
 /* ── Ear-clipping triangulation with holes ─────────────────────────────────
    Adapted from mapbox/earcut (ISC License). The z-order hashing fast path is
    removed - the flange faces have few vertices, so the plain O(n²) ear test is
@@ -1847,7 +2090,7 @@ function ecSignedArea(data, start, end, dim) {
   return sum;
 }
 
-export function toBinarySTL(positions, indices, name) {
+function binarySTLBytes(positions, indices, name) {
   const tris = [];
   for (let i = 0; i < indices.length; i += 3) {
     const a = indices[i] * 3, b = indices[i + 1] * 3, c = indices[i + 2] * 3;
@@ -1879,7 +2122,23 @@ export function toBinarySTL(positions, indices, name) {
     }
     dv.setUint16(o, 0, true); o += 2;
   }
-  return new Blob([buf], { type: 'model/stl' });
+  return new Uint8Array(buf);
+}
+
+export function toBinarySTL(positions, indices, name) {
+  return new Blob([binarySTLBytes(positions, indices, name)], { type: 'model/stl' });
+}
+
+// STL holds exactly one triangle soup, so a chain of separately-printed pipes
+// can't share a file. Bundle one STL per pipe into a ZIP instead of firing a
+// download per part - browsers block or prompt on a burst of downloads.
+// `parts` is [{ name, positions, indices }]; `name` is the file's base name.
+export function toSTLZip(parts) {
+  const files = parts.map((pt) => ({
+    name: pt.name + '.stl',
+    data: binarySTLBytes(pt.positions, pt.indices, pt.name),
+  }));
+  return new Blob(mfZip(files), { type: 'application/zip' });
 }
 
 // ── 3MF export ──────────────────────────────────────────────────────────────
@@ -1949,9 +2208,14 @@ function mfZip(files) {
   return chunks;
 }
 
-export function to3MF(positions, indices, name) {
-  // Weld coincident vertices onto a 1e-4 mm grid - far below print resolution,
-  // above float noise - so shared edges become truly shared (manifold by index).
+const mfEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+
+// Emit one <object> for a triangle soup. Coincident vertices are welded onto a
+// 1e-4 mm grid - far below print resolution, above float noise - so shared
+// edges become truly shared (manifold by index), which is what 3MF wants and
+// STL cannot express.
+function mfObject(out, id, part) {
+  const { positions, indices } = part;
   const map = new Map();
   const verts = [];
   const remap = new Int32Array(positions.length / 3);
@@ -1963,28 +2227,40 @@ export function to3MF(positions, indices, name) {
     if (idx === undefined) { idx = verts.length / 3; map.set(key, idx); verts.push(x, y, z); }
     remap[i] = idx;
   }
-
-  const parts = [
-    '<?xml version="1.0" encoding="UTF-8"?>\n',
-    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n',
-    ' <resources>\n  <object id="1" type="model" name="', (name || 'pipe adapter'), '">\n   <mesh>\n    <vertices>\n',
-  ];
+  out.push('  <object id="' + id + '" type="model" name="' + mfEsc(part.name || 'pipe adapter') + '">\n   <mesh>\n    <vertices>\n');
   for (let i = 0; i < verts.length; i += 3) {
-    parts.push('     <vertex x="' + verts[i] + '" y="' + verts[i + 1] + '" z="' + verts[i + 2] + '"/>\n');
+    out.push('     <vertex x="' + verts[i] + '" y="' + verts[i + 1] + '" z="' + verts[i + 2] + '"/>\n');
   }
-  parts.push('    </vertices>\n    <triangles>\n');
+  out.push('    </vertices>\n    <triangles>\n');
   for (let t = 0; t < indices.length; t += 3) {
     const a = remap[indices[t]], b = remap[indices[t + 1]], c = remap[indices[t + 2]];
     if (a === b || b === c || a === c) continue; // drop degenerate
-    parts.push('     <triangle v1="' + a + '" v2="' + b + '" v3="' + c + '"/>\n');
+    out.push('     <triangle v1="' + a + '" v2="' + b + '" v3="' + c + '"/>\n');
   }
-  parts.push('    </triangles>\n   </mesh>\n  </object>\n </resources>\n <build>\n  <item objectid="1"/>\n </build>\n</model>\n');
+  out.push('    </triangles>\n   </mesh>\n  </object>\n');
+}
+
+// Unlike STL, 3MF is a package of indexed objects, so a whole chain fits in one
+// file: an object per pipe, each a separate build item the slicer can move or
+// print on its own. The parts arrive already in assembly coordinates, so the
+// items need no transform of their own and the file opens as the assembly.
+// `parts` is [{ name, positions, indices }].
+export function to3MF(parts) {
+  const out = [
+    '<?xml version="1.0" encoding="UTF-8"?>\n',
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n',
+    ' <resources>\n',
+  ];
+  parts.forEach((part, i) => mfObject(out, i + 1, part));
+  out.push(' </resources>\n <build>\n');
+  parts.forEach((part, i) => out.push('  <item objectid="' + (i + 1) + '"/>\n'));
+  out.push(' </build>\n</model>\n');
 
   const enc = new TextEncoder();
   const files = [
     { name: '[Content_Types].xml', data: enc.encode(MF_CONTENT_TYPES) },
     { name: '_rels/.rels', data: enc.encode(MF_RELS) },
-    { name: '3D/3dmodel.model', data: enc.encode(parts.join('')) },
+    { name: '3D/3dmodel.model', data: enc.encode(out.join('')) },
   ];
   return new Blob(mfZip(files), { type: 'model/3mf' });
 }

@@ -109,7 +109,14 @@
             <button class="schematic-expand" id="btn-expand" type="button" title="Expand diagram" aria-label="Expand diagram">⛶</button>
           </figcaption>
           <canvas class="schematic-canvas" id="diagram"></canvas>
-          <button class="btn btn-secondary schematic-reset" id="btn-diagram-reset" type="button" title="Reset view" aria-label="Reset view" hidden>Reset view</button>
+          <div class="schematic-overlay">
+            <div class="pipe-switch" id="pipe-switch" hidden>
+              <button class="pipe-switch-arrow" id="btn-pipe-prev" type="button" title="Show the previous pipe" aria-label="Show the previous pipe">‹</button>
+              <span class="pipe-switch-label" id="pipe-switch-label">All Pipes</span>
+              <button class="pipe-switch-arrow" id="btn-pipe-next" type="button" title="Show the next pipe" aria-label="Show the next pipe">›</button>
+            </div>
+            <button class="btn btn-secondary schematic-reset" id="btn-diagram-reset" type="button" title="Reset view" aria-label="Reset view" hidden>Reset view</button>
+          </div>
         </figure>
       </main>
     </div>

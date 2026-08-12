@@ -461,16 +461,48 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .schematic-expand.is-swapped { color: var(--color-accent-400); }
 .schematic-canvas { display: block; width: 100%; height: 226px; cursor: grab; touch-action: none; }
 /* Floating reset-view control, top-left over the drawing. Sits just below the
-   caption; toggled visible from JS only when the diagram is zoomed or panned. */
-.schematic-reset {
+   caption. The column is a layout box only - it spans the drawing's width, so
+   it must not swallow the drags and wheel-zoom aimed at the canvas beneath. */
+.schematic-overlay {
   position: absolute; top: 40px; left: 10px; z-index: 3;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  pointer-events: none;
+}
+.schematic-overlay > * { pointer-events: auto; }
+.viewer.swapped .schematic-overlay { z-index: 6; }
+
+/* Toggled visible from JS only when the diagram is zoomed or panned. */
+.schematic-reset {
   padding: 4px 9px; font-size: 11px; white-space: nowrap;
   background: color-mix(in srgb, var(--color-bg) 78%, transparent);
   border-color: var(--color-neutral-800);
   -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
 }
 .schematic-reset[hidden] { display: none; }
-.viewer.swapped .schematic-reset { z-index: 6; }
+
+/* Steps the drawing through All Pipes → Pipe 1 → Pipe 2 …, so one part of a
+   chain can be read on its own. Only present when there are several. */
+.pipe-switch {
+  display: flex; align-items: center; gap: 1px;
+  padding: 1px 2px;
+  font-size: 11px; color: var(--color-neutral-300);
+  background: color-mix(in srgb, var(--color-bg) 78%, transparent);
+  border: 1px solid var(--color-neutral-800); border-radius: var(--radius-sm);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  user-select: none;
+}
+.pipe-switch[hidden] { display: none; }
+.pipe-switch-label { min-width: 62px; text-align: center; white-space: nowrap; }
+.pipe-switch-arrow {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  background: none; border: 0; border-radius: var(--radius-sm);
+  color: var(--color-neutral-500); font-size: 14px; line-height: 1; cursor: pointer;
+}
+.pipe-switch-arrow:hover { color: var(--color-neutral-100); background: color-mix(in srgb, var(--color-text) 10%, transparent); }
+/* At either end of the run the arrow goes, but keeps its slot so the label
+   doesn't shift as you step through. */
+.pipe-switch-arrow.is-off { visibility: hidden; }
 
 /* Whenever the panel is docked below (the `panel-below` class, set from
    applyLayout at the same breakpoint), the docked card collapses to just its

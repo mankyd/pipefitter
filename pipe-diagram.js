@@ -42,13 +42,21 @@ export function setDiagramTheme(name) {
 // path). `view` is an optional user zoom/pan applied on top of the base fit:
 // { zoom, panX, panY } in screen (CSS px) space, defaulting to identity - the
 // drawing keeps its correct aspect ratio at every zoom because the base fit
-// uses a single uniform scale. Returns { leftX, leftTopY } - the screen
-// position (CSS px, canvas-relative) of the drawing's left edge and the top of
-// the first pipe's left end, so callers can line an overlay up with it.
-export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) {
+// uses a single uniform scale. `onlyPipe` draws a single pipe of the chain by
+// index, so one part can be read on its own; null or undefined draws them all.
+// Returns { leftX, leftTopY } - the screen position (CSS px, canvas-relative)
+// of the drawing's left edge and the top of its first pipe's left end, so
+// callers can line an overlay up with it.
+export function drawDiagram(canvas, chain, highlight, bottomInset, units, view, onlyPipe) {
   if (!canvas || !chain || !chain.pipes || !chain.pipes.length) return null;
-  const all = chain.pipes;
-  const g = all[0];
+  // Each entry keeps the pipe's index in the whole chain, so a part drawn on
+  // its own is still labelled by which pipe it actually is.
+  const all = chain.pipes
+    .map((g, i) => ({ g, i }))
+    .filter((p) => onlyPipe == null || p.i === onlyPipe);
+  if (!all.length) return null;
+  const nPipes = chain.pipes.length;
+  const g = all[0].g;
   // Dimension labels are converted for display only; the geometry is always mm.
   const inMode = units === 'in';
   const nv = (mm) => inMode ? (Math.round((mm / 25.4) * 1000) / 1000) : mm;   // number in the active unit
@@ -67,7 +75,7 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   // Fit the whole chain at once, so the parts keep their relative size and the
   // joints read as joints rather than as two separately-scaled drawings.
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const gp of all) {
+  for (const { g: gp } of all) {
     for (const q of [...gp.silhouette.outer.top, ...gp.silhouette.outer.bot]) {
       if (q[0] < minX) minX = q[0]; if (q[0] > maxX) maxX = q[0];
       if (q[1] < minY) minY = q[1]; if (q[1] > maxY) maxY = q[1];
@@ -112,7 +120,7 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   // reaches into it is material seen through that hole, so it has to sit on
   // top. Drawing each pipe complete in turn would let the later one's bore
   // paint out the end of the pipe plugged into it.
-  const loops = all.map((gp) => ({
+  const loops = all.map(({ g: gp }) => ({
     outer: [...gp.silhouette.outer.top, ...[...gp.silhouette.outer.bot].reverse()],
     inner: [...gp.silhouette.inner.top, ...[...gp.silhouette.inner.bot].reverse()],
   }));
@@ -146,7 +154,8 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   // Drawn over the cross-section so it reads as a highlight; centerline and
   // dimensions stay crisp on top.
   if (highlight) {
-    const gp = all[highlight.pipe || 0];
+    const found = all.find((p) => p.i === (highlight.pipe || 0));
+    const gp = found && found.g;
     const src = gp && (highlight.kind === 'bend' ? gp.path.bends[highlight.index]
       : highlight.kind === 'pipe' ? { sStart: 0, sEnd: gp.path.total }
         : gp.path.sections[highlight.index]);
@@ -178,7 +187,7 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   ctx.setLineDash([6, 4, 2, 4]);
   ctx.strokeStyle = T.center;
   ctx.lineWidth = 1;
-  for (const gp of all) { poly(gp.silhouette.center, false); ctx.stroke(); }
+  for (const { g: gp } of all) { poly(gp.silhouette.center, false); ctx.stroke(); }
   ctx.restore();
 
   ctx.font = '500 10px Inter, system-ui, sans-serif';
@@ -213,11 +222,15 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
     ctx.restore();
   };
 
-  // Any bent segment anywhere → the chain runs off-axis, so every dimension
-  // has to be drawn against its own segment rather than a shared base line.
-  const anyBend = all.some((gp) => gp.path.bend);
+  // Is the drawing axis-aligned? Only then can dimensions be measured against a
+  // shared horizontal base line. A bend tilts a pipe, but so does its PLACEMENT
+  // in the chain - a perfectly straight pipe is still drawn at an angle when the
+  // part before it turns - so ask the sections which way they actually run
+  // rather than inferring it from the bends.
+  const offAxis = all.some(({ g: gp }) => gp.path.bend
+    || gp.path.sections.some((sec) => Math.abs(sec.t[1]) > 1e-6));
   // Dimensions belong to a pipe once there is more than one to tell apart.
-  const partTag = (pj, t) => (all.length > 1 ? 'P' + (pj + 1) + '·' + t : t);
+  const partTag = (pi, t) => (nPipes > 1 ? 'P' + (pi + 1) + '·' + t : t);
   // Straight chains measure against a base line under the drawing. Two pipes
   // laid end to end would stack their ticks on the same line — and largely on
   // the same span — so each pipe gets a row of its own.
@@ -237,7 +250,7 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
     // free end isn't part of the section's length. They are points in assembly
     // space, which is what the base line has to be measured against: arclength
     // only doubles as an x coordinate for a lone pipe standing at the origin.
-    if (!anyBend) { tick(X(sec.lp0[0]), base, X(sec.lp1[0]), base, label); return; }
+    if (!offAxis) { tick(X(sec.lp0[0]), base, X(sec.lp1[0]), base, label); return; }
     const v = [sec.t[1], -sec.t[0]];
     const off = sec.od / 2 + 6;
     tick(
@@ -261,12 +274,12 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   };
 
   for (let pj = 0; pj < all.length; pj++) {
-  const gp = all[pj];
+  const { g: gp, i: pi } = all[pj];
   const sArr = gp.silhouette.outer.s;
 
   // Sections: one length tick + one bore-diameter tick each.
   gp.path.sections.forEach((sec, i) => {
-    lengthTick(sec, partTag(pj, 'S' + (i + 1)) + ' ' + nv(sec.l) + uu, rowY(pj));
+    lengthTick(sec, partTag(pi, 'S' + (i + 1)) + ' ' + nv(sec.l) + uu, rowY(pj));
     boreTick(sec, 'ø' + nv(sec.id));
   });
 
@@ -275,7 +288,7 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   // plain length tick. A fixed (non-continuous) middle diameter draws a bore tick
   // at its midpoint.
   gp.path.bends.forEach((bd, i) => {
-    const tag = partTag(pj, 'B' + (i + 1));
+    const tag = partTag(pi, 'B' + (i + 1));
     if (bd.bend) {
       const c = bd.center;
       const idx = [];
@@ -338,7 +351,7 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
       // length actually drawn (rounded to a tenth) — the reducer may have been
       // lengthened past the requested l2 to keep its wall thick, and l2 can be 0.
       const len = Math.round(bd.arcLen * 10) / 10;
-      if (!anyBend) tick(X(bd.p0[0]), rowY(pj), X(bd.p1[0]), rowY(pj), tag + ' ' + nv(len) + uu);
+      if (!offAxis) tick(X(bd.p0[0]), rowY(pj), X(bd.p1[0]), rowY(pj), tag + ' ' + nv(len) + uu);
       else {
         const v = [bd.t0[1], -bd.t0[0]], off = 10;
         tick(X(bd.p0[0] - v[0] * off), Y(bd.p0[1] - v[1] * off), X(bd.p1[0] - v[0] * off), Y(bd.p1[1] - v[1] * off), tag + ' ' + nv(len) + uu);

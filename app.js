@@ -33,6 +33,10 @@ const el = {
   notes: document.getElementById('notes'),
   diagram: document.getElementById('diagram'),
   diagramReset: document.getElementById('btn-diagram-reset'),
+  pipeSwitch: document.getElementById('pipe-switch'),
+  pipeSwitchLabel: document.getElementById('pipe-switch-label'),
+  pipePrev: document.getElementById('btn-pipe-prev'),
+  pipeNext: document.getElementById('btn-pipe-next'),
   schematic: document.getElementById('schematic'),
   overlayBr: document.querySelector('.overlay-br'),
   viewer: document.getElementById('viewer'),
@@ -1071,11 +1075,44 @@ const resetDiagramView = () => {
   diagramView.zoom = 1; diagramView.panX = 0; diagramView.panY = 0;
   syncDiagramReset();
 };
+// Which pipe the cross section draws: null for the whole assembly, else an
+// index into the chain. A joint is easiest to read with both parts in place,
+// so the assembly is the default; a single part is for checking one on its own.
+let diagramPipe = null;
+
 // When expanded, reserve room at the bottom of the drawing for the floating
 // coffee button so the diagram content clears it.
 const drawSchematic = () => {
-  drawDiagram(el.diagram, cachedG, hoveredSection, swapped ? 64 : 0, state.units, diagramView);
+  drawDiagram(el.diagram, cachedG, hoveredSection, swapped ? 64 : 0, state.units, diagramView, diagramPipe);
 };
+
+// The switcher runs All Pipes → Pipe 1 → … → Pipe N as one line, so the arrows
+// step along it and drop off at either end. It only earns its place once there
+// is more than one part to tell apart.
+function syncPipeSwitch() {
+  const n = (state.params && state.params.pipes.length) || 1;
+  // The pipe being shown can be removed out from under this; fall back to the
+  // whole assembly rather than pointing at a part that is no longer there.
+  if (diagramPipe !== null && diagramPipe >= n) diagramPipe = null;
+  if (n < 2) diagramPipe = null;
+  if (!el.pipeSwitch) return;
+  el.pipeSwitch.hidden = n < 2;
+  if (n < 2) return;
+  const pos = diagramPipe === null ? 0 : diagramPipe + 1;
+  el.pipeSwitchLabel.textContent = diagramPipe === null ? 'All Pipes' : 'Pipe ' + (diagramPipe + 1);
+  el.pipePrev.classList.toggle('is-off', pos === 0);
+  el.pipeNext.classList.toggle('is-off', pos === n);
+}
+function stepPipeView(dir) {
+  const n = state.params.pipes.length;
+  const pos = clamp((diagramPipe === null ? 0 : diagramPipe + 1) + dir, 0, n);
+  diagramPipe = pos === 0 ? null : pos - 1;
+  // What's on screen changes wholesale, so a zoom carried over from the last
+  // selection would land somewhere arbitrary. Open framed instead.
+  resetDiagramView();
+  syncPipeSwitch();
+  drawSchematic();
+}
 
 // Lift the docked schematic card above the copyright/coffee row, but only when
 // the two would actually overlap (they're at opposite bottom corners, so this
@@ -1560,6 +1597,7 @@ function render() {
   }
 
   // reflect into the 3D view and schematic
+  syncPipeSwitch();
   if (renderer) syncMesh();
   drawSchematic();
 }
@@ -2648,6 +2686,8 @@ function init() {
   el.expand.addEventListener('click', toggleSwap);
   bindSchematicDrag();
   el.diagramReset.addEventListener('click', () => { resetDiagramView(); drawSchematic(); });
+  el.pipePrev.addEventListener('click', () => stepPipeView(-1));
+  el.pipeNext.addEventListener('click', () => stepPipeView(1));
   bindDiagramControls(el.diagram);
   el.help.addEventListener('click', openHelp);
   el.helpClose.addEventListener('click', closeHelp);

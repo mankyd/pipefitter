@@ -529,7 +529,8 @@ function addPipe(where) {
   const pipes = state.params.pipes;
   if (pipes.length >= geo.MAX_PIPES) return;
   const after = where === 'after';
-  const anchor = after ? pipes[pipes.length - 1] : pipes[0];
+  const anchorIdx = after ? pipes.length - 1 : 0;
+  const anchor = pipes[anchorIdx];
   const src = after ? anchor.sections[anchor.sections.length - 1] : anchor.sections[0];
   const dims = () => ({ id: src.id, w: src.w, l: src.l, end: geo.defaultEnd() });
   const np = { sections: [dims(), dims()], bends: [bendFrom(src)] };
@@ -540,6 +541,10 @@ function addPipe(where) {
     shiftCollapsedPipes(0, 1);                       // every existing pipe moves up one
     p.pipes.unshift(np);
   }
+  // Fold away the pipe this one grew from: the panel is now about the new part,
+  // and its parent is a finished thing you had to scroll past to reach it.
+  // Prepending pushed that parent to index 1.
+  collapsedGroups.add(gid(after ? anchorIdx : anchorIdx + 1));
   // The pipe that was already there owns the joint either way: appending flows
   // left to right by default, prepending has to be told (the existing pipe is
   // now pipe 1, and its FIRST end is the one that was clicked).

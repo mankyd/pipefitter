@@ -93,29 +93,49 @@ export function drawDiagram(canvas, chain, highlight, bottomInset, units, view) 
   const Y = (y) => panY + zoom * (oy - y * k);
   const kz = k * zoom;   // effective world→screen scale, for screen-px margins
 
+  const trace = (list) => {
+    list.forEach((q, i) => (i ? ctx.lineTo(X(q[0]), Y(q[1])) : ctx.moveTo(X(q[0]), Y(q[1]))));
+  };
   const poly = (list, close) => {
     ctx.beginPath();
-    list.forEach((q, i) => (i ? ctx.lineTo(X(q[0]), Y(q[1])) : ctx.moveTo(X(q[0]), Y(q[1]))));
+    trace(list);
     if (close) ctx.closePath();
   };
 
-  // Solid wall bodies: outer silhouette, bore knocked out, outlines stroked.
-  // Every part is drawn before any dimension is, so one pipe's body can't paint
-  // over its neighbour's labels.
-  for (const gp of all) {
-    poly([...gp.silhouette.outer.top, ...[...gp.silhouette.outer.bot].reverse()], true);
-    ctx.fillStyle = T.fill;
-    ctx.fill();
-    ctx.strokeStyle = T.wall;
-    ctx.lineWidth = 1.25;
-    ctx.stroke();
+  // Solid wall bodies. Every part is drawn before any dimension is, so one
+  // pipe's body can't paint over its neighbour's labels.
+  //
+  // A joint puts one pipe INSIDE another - a spigot down its mate's bore, or a
+  // socket's collar around its mate's end - so the parts have to be layered by
+  // what they are rather than by which pipe they belong to. Hollow first for
+  // every pipe, then solid for every pipe: a bore is a hole, and anything that
+  // reaches into it is material seen through that hole, so it has to sit on
+  // top. Drawing each pipe complete in turn would let the later one's bore
+  // paint out the end of the pipe plugged into it.
+  const loops = all.map((gp) => ({
+    outer: [...gp.silhouette.outer.top, ...[...gp.silhouette.outer.bot].reverse()],
+    inner: [...gp.silhouette.inner.top, ...[...gp.silhouette.inner.bot].reverse()],
+  }));
 
-    poly([...gp.silhouette.inner.top, ...[...gp.silhouette.inner.bot].reverse()], true);
-    ctx.fillStyle = T.bore;
-    ctx.fill();
-    ctx.strokeStyle = T.wall;
+  ctx.fillStyle = T.bore;
+  for (const lp of loops) { poly(lp.inner, true); ctx.fill(); }
+
+  // The wall alone - the outer silhouette with the bore knocked out (even-odd),
+  // so filling it can never cover what is inside the hollow.
+  ctx.fillStyle = T.fill;
+  for (const lp of loops) {
+    ctx.beginPath();
+    trace(lp.outer); ctx.closePath();
+    trace(lp.inner); ctx.closePath();
+    ctx.fill('evenodd');
+  }
+
+  ctx.strokeStyle = T.wall;
+  for (const lp of loops) {
+    ctx.lineWidth = 1.25;
+    poly(lp.outer, true); ctx.stroke();
     ctx.lineWidth = 1;
-    ctx.stroke();
+    poly(lp.inner, true); ctx.stroke();
   }
 
   // Section highlight (hover-driven). `highlight` is { pipe, kind, index }

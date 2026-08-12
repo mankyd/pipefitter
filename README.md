@@ -12,10 +12,11 @@ minute rather than a full CAD session.
 
 ## What it can do
 
-- **Any number of sections**, each with its own inner diameter, wall thickness, and
-  length, joined by planar bends of up to 90 degrees.
-- **End treatments** on the first and last sections: plain, chamfer, flange (with bolt
-  holes), hose barb, teeth, and a slip joint for sliding two pipes together.
+- **Any number of sections** — from a single straight run upward — each with its own
+  inner diameter, wall thickness, and length, joined by planar bends of up to 90 degrees.
+- **End treatments** on the pipe's two open ends: plain, chamfer, flange (with bolt
+  holes), hose barb, teeth, and a slip joint for sliding two pipes together. A lone
+  section carries both of them, one per side.
 - **Live 3D preview** (orbit / pan / zoom, multiple render styles) and a **live 2D
   cross-section** with dimensions.
 - **Export** to binary STL or 3MF, optionally oriented to sit flat on an end face.

@@ -3,12 +3,16 @@
 // centerline with per-station inner/outer radii, end features, binary STL export.
 //
 // Parameter model (single source of truth):
-//   { sections: [ {id, w, l, end?}, ... ],   // N straight sections, N >= 2
+//   { sections: [ {id, w, l, endA?, endB?}, ... ],   // N straight sections, N >= 1
 //     bends:    [ {ang, l2, idm, w2, idmSmooth, w2Smooth}, ... ] }   // N-1 bends
-// Only the FIRST and LAST sections carry an `end` treatment; interior sections
-// are pure constant-profile straight runs. Each bend owns the diameter/wall
-// transition between its two neighboring sections. All bends lie in one plane;
-// a bend's `ang` is SIGNED ([-90,90]) - its sign is the turn direction.
+// The pipe has exactly two open ends, and they live on the sections that own
+// them: the FIRST section carries `endA` (the left/start treatment) and the LAST
+// carries `endB` (the right/finish treatment). A lone section is both first and
+// last, so it carries both and the two treatments split its length between them
+// (see endAvail). Interior sections are pure constant-profile straight runs.
+// Each bend owns the diameter/wall transition between its two neighboring
+// sections. All bends lie in one plane; a bend's `ang` is SIGNED ([-90,90]) -
+// its sign is the turn direction.
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const round = (v, dp) => { const f = 10 ** dp; return Math.round(v * f) / f; };
@@ -33,18 +37,30 @@ const END_WHOLE = new Set(['Fn', 'Bn', 'Tn']);
 // A slip-joint's shoulder ("stop") is a solid floor as thick as the section wall,
 // so it reads as a proper flange-like step; the tolerance gap is bridged over it.
 // Capped at half the fit length so a very short stub still has a spigot/socket,
-// and at the section length so the floor never outgrows the section it sits in.
+// and at `secLen` — the straight run the end is given (see endAvail) — so the
+// floor never outgrows the section it sits in.
 const fitFloor = (wall, L, secLen) => Math.min(wall, L * 0.5, secLen);
 
-// The axial length a slip-joint adds to its section. The stop's floor is part of
-// the section — the measured section length runs from the interior stop wall to
-// the far end — so only the protruding stub (FitL minus the floor) extends past
-// it. The section thus keeps its full length between the stop and the bend.
-const fitLen = (sec) => {
-  const end = sec && sec.end;
+// The two end slots, in path order: `endA` at the near (s=0) end of the first
+// section, `endB` at the far (s=T) end of the last one.
+export const END_SLOTS = ['endA', 'endB'];
+const endsOf = (sec) => END_SLOTS.map((k) => sec && sec[k]).filter(Boolean);
+// How much straight length each end treatment may spend. A section with one end
+// gets the whole run; a lone section carries both treatments, so they split it
+// down the middle and neither can reach across into the other's half.
+const endAvail = (sec) => sec.l / Math.max(1, endsOf(sec).length);
+
+// The axial length one slip joint adds to its section. The stop's floor is part
+// of the section — the measured section length runs from the interior stop wall
+// to the far end — so only the protruding stub (FitL minus the floor) extends
+// past it. The section thus keeps its full length between the stop and the bend.
+const fitLenOf = (sec, end) => {
   if (!end || end.type !== 'fit') return 0;
-  return Math.max(0, end.FitL - fitFloor(sec.w, end.FitL, sec.l));
+  return Math.max(0, end.FitL - fitFloor(sec.w, end.FitL, endAvail(sec)));
 };
+// Everything a section's end treatments add to its straight span (both ends,
+// when it has two).
+const fitLen = (sec) => endsOf(sec).reduce((t, e) => t + fitLenOf(sec, e), 0);
 
 // Fresh default sub-objects (never share mutable references between params).
 export function defaultEnd() {
@@ -63,8 +79,8 @@ export function defaultBend() {
 export function defaultParams() {
   return {
     sections: [
-      { id: 12, w: 2, l: 26, end: defaultEnd() },
-      { id: 20, w: 2.5, l: 26, end: defaultEnd() },
+      { id: 12, w: 2, l: 26, endA: defaultEnd() },
+      { id: 20, w: 2.5, l: 26, endB: defaultEnd() },
     ],
     bends: [defaultBend()],
   };
@@ -74,7 +90,11 @@ export const DEFAULTS = defaultParams();
 // Structured deep clone of a params object (sections/bends/ends).
 export function cloneParams(p) {
   return {
-    sections: (p.sections || []).map((s) => ({ ...s, end: s.end ? { ...s.end } : undefined })),
+    sections: (p.sections || []).map((s) => {
+      const c = { ...s };
+      for (const k of END_SLOTS) if (s[k]) c[k] = { ...s[k] }; else delete c[k];
+      return c;
+    }),
     bends: (p.bends || []).map((b) => ({ ...b })),
   };
 }
@@ -110,25 +130,28 @@ function fitStub(end, sec) {
 }
 
 // Clamp every value into a printable, non-self-intersecting range, and enforce
-// the shape invariant (N >= 2 sections, exactly N-1 bends, ends on the two
-// extremes only). Returns { p, notes } - notes describe what had to be pulled back.
+// the shape invariant (N >= 1 sections, exactly N-1 bends, endA on the first
+// section and endB on the last - both on the same section when there is only
+// one). Returns { p, notes } - notes describe what had to be pulled back.
 export function normalize(raw) {
   const notes = [];
   const rawSecs = Array.isArray(raw && raw.sections) ? raw.sections : [];
   const rawBends = Array.isArray(raw && raw.bends) ? raw.bends : [];
-  const n = Math.max(2, rawSecs.length);
+  const n = Math.max(1, rawSecs.length);
 
   const sections = [];
   for (let i = 0; i < n; i++) {
     const rs = rawSecs[i] || {};
-    const sec = {
+    sections.push({
       id: cnum(rs.id, SECTION_LIMITS.id, false, 12),
       w: cnum(rs.w, SECTION_LIMITS.w, false, 2),
       l: cnum(rs.l, SECTION_LIMITS.l, false, 26),
-    };
-    if (i === 0 || i === n - 1) sec.end = normEnd(rs.end);   // ends only on first/last
-    sections.push(sec);
+    });
   }
+  // Ends live only on the geometric extremes; with one section that is the same
+  // section twice, and it ends up carrying both treatments.
+  sections[0].endA = normEnd((rawSecs[0] || {}).endA);
+  sections[n - 1].endB = normEnd((rawSecs[n - 1] || {}).endB);
   const bends = [];
   for (let i = 0; i < n - 1; i++) {
     const rb = rawBends[i] || {};
@@ -206,20 +229,24 @@ export function normalize(raw) {
     }
   }
 
-  fitEnd(sections[0], 0, notes);
-  fitEnd(sections[n - 1], n - 1, notes);
+  fitEnd(sections[0], 'endA', 0, notes);
+  fitEnd(sections[n - 1], 'endB', n - 1, notes);
   return { p: { sections, bends }, notes };
 }
 
-// An end feature must fit inside its straight section. Mutates sec.end and
-// appends any pull-back notes (labeled by 1-based section index).
-function fitEnd(sec, index, notes) {
-  const e = sec.end;
+// An end feature must fit inside the straight length its section affords it —
+// the whole section, or half of it when that section carries both treatments.
+// Mutates sec[slot] and appends any pull-back notes (labeled by 1-based section
+// index, and by side when the section has two ends to tell apart).
+function fitEnd(sec, slot, index, notes) {
+  const e = sec[slot];
   if (!e) return;
-  const label = 'Section ' + (index + 1);
-  const secLen = sec.l, wall = sec.w;
+  const nEnds = endsOf(sec).length;
+  const label = 'Section ' + (index + 1) +
+    (nEnds > 1 ? (slot === 'endA' ? ' left end' : ' right end') : '');
+  const secLen = endAvail(sec), wall = sec.w;
   if (e.type === 'chamfer') {
-    const maxX = secLen;   // an along-axis chamfer can span the whole section
+    const maxX = secLen;   // an along-axis chamfer can span the whole run it's given
     for (const k of ['ChX', 'ChIX']) {
       if (e[k] > maxX) { e[k] = round(maxX, 2); notes.push(label + ' chamfer depth limited to ' + e[k] + ' mm by section length'); }
     }
@@ -270,7 +297,10 @@ function fitEnd(sec, index, notes) {
     // The stop's solid floor is part of the section, though, so the section can't
     // be shorter than that floor thickness.
     const floor = round(Math.min(wall, e.FitL * 0.5), 2);
-    if (sec.l < floor) { sec.l = floor; notes.push(label + ' lengthened to ' + sec.l + ' mm — the slip joint stop needs that thickness'); }
+    if (secLen < floor) {
+      sec.l = round(floor * nEnds, 2);   // each end needs its own floor out of the section
+      notes.push(label + ' lengthened to ' + sec.l + ' mm — the slip joint stop needs that thickness');
+    }
     // A spigot's tolerance can't exceed the bore (it would invert the wall).
     if (e.FitSide === 'inside') {
       const maxTol = Math.max(0, sec.id - 2 * wall - 0.5);
@@ -980,7 +1010,7 @@ function teethRadiusFn(spec, s) {
 // Outer-radius control points measured from one end, innermost first.
 function endFeature(end, baseOuter, sec) {
   const type = end.type;
-  const secLen = sec.l;
+  const secLen = endAvail(sec);   // the straight run this end may occupy
   const O = baseOuter;
   const pts = [];
   if (type === 'chamfer') {
@@ -1018,7 +1048,7 @@ function endFeature(end, baseOuter, sec) {
     // spigot (outer steps DOWN to the stub, lead-in chamfer on the outer tip).
     // Outside → female socket (outer steps UP; the bore is chamfered instead).
     const st = fitStub(end, sec);
-    const L = end.FitL, floor = fitFloor(st.w, L, sec.l);
+    const L = end.FitL, floor = fitFloor(st.w, L, secLen);
     if (st.side === 'inside') {
       const cx = Math.min(end.FitChX, L - floor), cy = end.FitChY;
       if (cx > 0 && cy > 0) pts.push({ d: 0, r: st.sO - cy }, { d: cx, r: st.sO });
@@ -1039,15 +1069,18 @@ function endFeature(end, baseOuter, sec) {
 // Bore-side control points measured from one end, innermost first. The chamfer
 // and the fit (slip joint) touch the bore; every other treatment leaves it straight.
 function innerEndFeature(end, baseInner, sec) {
+  const secLen = endAvail(sec);   // the straight run this end may occupy
   if (end.type === 'fit' && end.FitL > 0) {
     const st = fitStub(end, sec);
-    const L = end.FitL, floor = fitFloor(st.w, L, sec.l);
+    const L = end.FitL, floor = fitFloor(st.w, L, secLen);
     if (st.side === 'inside') {
       // Spigot bore runs straight through the insertion length, then opens back
       // out to the body bore as one gradual taper spanning the whole inside of
       // the section body (a smooth internal reducer, rather than an abrupt wall).
-      // The taper reaches the body bore at the far (bend) junction of the span.
-      return [{ d: 0, r: st.sI }, { d: L - floor, r: st.sI }, { d: sec.l + L - floor, r: st.I }];
+      // The taper reaches the body bore at the far (bend) junction of the span -
+      // or, on a section with two ends, at the midpoint where the other end's
+      // zone begins.
+      return [{ d: 0, r: st.sI }, { d: L - floor, r: st.sI }, { d: secLen + L - floor, r: st.I }];
     }
     // Socket bore = stub bore with a lead-in flare, running to the stop where it
     // steps DOWN to the body bore (the mate bottoms against that shoulder).
@@ -1265,8 +1298,11 @@ export function build(raw, radialSegments) {
   const sections = p.sections, bends = p.bends;
   const nSec = sections.length;
   const first = sections[0], last = sections[nSec - 1];
+  // The two open ends: A on the first section, B on the last. With a single
+  // section `first` and `last` are the same section, carrying one of each.
+  const endA = first.endA, endB = last.endB;
   const od = sections.map((sc) => sc.id + 2 * sc.w);
-  const hasTeeth = first.end.type === 'teeth' || last.end.type === 'teeth';
+  const hasTeeth = endA.type === 'teeth' || endB.type === 'teeth';
   // Teeth need more angular resolution to render their sectors and fillets.
   const N = hasTeeth ? Math.max(radialSegments || 84, 160) : (radialSegments || 84);
 
@@ -1274,12 +1310,12 @@ export function build(raw, radialSegments) {
   // needed before the path: the bend solver keeps its envelope leads clear of
   // them (and the same leads later place the meshed envelope chains).
   const Ofirst = od[0] / 2, Olast = od[nSec - 1] / 2;
-  const featA = endFeature(first.end, Ofirst, first);
-  const featB = endFeature(last.end, Olast, last);
+  const featA = endFeature(endA, Ofirst, first);
+  const featB = endFeature(endB, Olast, last);
   const zoneA = featA[featA.length - 1].d;
   const zoneB = featB[featB.length - 1].d;
-  const innerFeatA = innerEndFeature(first.end, first.id / 2, first);
-  const innerFeatB = innerEndFeature(last.end, last.id / 2, last);
+  const innerFeatA = innerEndFeature(endA, first.id / 2, first);
+  const innerFeatB = innerEndFeature(endB, last.id / 2, last);
   const iZoneA = innerFeatA[innerFeatA.length - 1].d;
   const iZoneB = innerFeatB[innerFeatB.length - 1].d;
 
@@ -1385,13 +1421,13 @@ export function build(raw, radialSegments) {
   // lip is meshed separately (see buildFlangeEnd). When that happens the outer
   // sweep is trimmed to the lip root and the end cap is replaced by hole-aware
   // faces; the full station list is still kept for the schematic silhouette.
-  const holesA = first.end.type === 'flange' && first.end.Fn >= 1 && first.end.Fh > 0;
-  const holesB = last.end.type === 'flange' && last.end.Fn >= 1 && last.end.Fh > 0;
+  const holesA = endA.type === 'flange' && endA.Fn >= 1 && endA.Fh > 0;
+  const holesB = endB.type === 'flange' && endB.Fn >= 1 && endB.Fh > 0;
 
   const assembleOuter = (trimA, trimB) => {
     const arr = [];
     const done = new Set();
-    if (trimA) arr.push({ s: first.end.Ft, r: Ofirst });
+    if (trimA) arr.push({ s: endA.Ft, r: Ofirst });
     else for (const f of featA) arr.push({ s: f.d, r: f.r });
     for (const s of sorted) {
       if (s > zoneA + 1e-6 && s < T - zoneB - 1e-6) {
@@ -1400,7 +1436,7 @@ export function build(raw, radialSegments) {
         pushStation(arr, { s, r: profileAt(s, path).outer });
       }
     }
-    if (trimB) arr.push({ s: T - last.end.Ft, r: Olast });
+    if (trimB) arr.push({ s: T - endB.Ft, r: Olast });
     else for (let i = featB.length - 1; i >= 0; i--) arr.push({ s: T - featB[i].d, r: featB[i].r });
     return arr;
   };
@@ -1412,8 +1448,8 @@ export function build(raw, radialSegments) {
   // of the plain cylinder). Mapped into a fresh array so the scalar-envelope
   // outerStations stay untouched.
   const teethSpecs = [];
-  if (first.end.type === 'teeth') teethSpecs.push(teethSpec(first.end, Ofirst, T, first.l, true));
-  if (last.end.type === 'teeth') teethSpecs.push(teethSpec(last.end, Olast, T, last.l, false));
+  if (endA.type === 'teeth') teethSpecs.push(teethSpec(endA, Ofirst, T, endAvail(first), true));
+  if (endB.type === 'teeth') teethSpecs.push(teethSpec(endB, Olast, T, endAvail(last), false));
   if (teethSpecs.length) {
     meshStations = meshStations.map((st) => {
       for (const spec of teethSpecs) {
@@ -1432,9 +1468,9 @@ export function build(raw, radialSegments) {
   // the same circle there, so they meet without a cap — the solid stays closed
   // once coincident rim vertices are welded, which is what STL/3MF import does.
   const capped = (ri, ro) => typeof ri !== 'number' || typeof ro !== 'number' || Math.abs(ro - ri) > 1e-9;
-  if (holesA) buildFlangeEnd(verts, uvs, seams, idx, path, N, { sFace: 0, sRoot: first.end.Ft, O: Ofirst, fw: first.end.Fw, rh: first.end.Fh / 2, n: first.end.Fn, boreR: first.id / 2, frontPlusTangent: false });
+  if (holesA) buildFlangeEnd(verts, uvs, seams, idx, path, N, { sFace: 0, sRoot: endA.Ft, O: Ofirst, fw: endA.Fw, rh: endA.Fh / 2, n: endA.Fn, boreR: first.id / 2, frontPlusTangent: false });
   else if (capped(inner[0].r, meshStations[0].r)) cap(verts, uvs, seams, idx, path, 0, inner[0].r, meshStations[0].r, N, -1);
-  if (holesB) buildFlangeEnd(verts, uvs, seams, idx, path, N, { sFace: T, sRoot: T - last.end.Ft, O: Olast, fw: last.end.Fw, rh: last.end.Fh / 2, n: last.end.Fn, boreR: last.id / 2, frontPlusTangent: true });
+  if (holesB) buildFlangeEnd(verts, uvs, seams, idx, path, N, { sFace: T, sRoot: T - endB.Ft, O: Olast, fw: endB.Fw, rh: endB.Fh / 2, n: endB.Fn, boreR: last.id / 2, frontPlusTangent: true });
   else if (capped(inner[inner.length - 1].r, meshStations[meshStations.length - 1].r)) cap(verts, uvs, seams, idx, path, T, inner[inner.length - 1].r, meshStations[meshStations.length - 1].r, N, 1);
 
   const positions = new Float32Array(verts);
@@ -1513,11 +1549,10 @@ export function build(raw, radialSegments) {
         // The length tick runs from the slip joint's interior stop wall to the
         // far end — that span is the section's length. A joint extends the span
         // past the free end (s=0 for the first section, s=T for the last) by its
-        // protruding stub; trim that off so the tick starts at the stop and
-        // spans exactly sc.l.
-        const fit = fitLen(sc);
-        const lStart = i === 0 ? sp.sStart + fit : sp.sStart;
-        const lEnd = i === nSec - 1 ? sp.sEnd - fit : sp.sEnd;
+        // protruding stub; trim each end's own stub off so the tick spans
+        // exactly sc.l, whichever ends this section carries.
+        const lStart = sp.sStart + fitLenOf(sc, sc.endA);
+        const lEnd = sp.sEnd - fitLenOf(sc, sc.endB);
         const la = path.at(lStart), lc = path.at(lEnd);
         return {
           id: sc.id, w: sc.w, l: sc.l, od: od[i], sStart: sp.sStart, sEnd: sp.sEnd,

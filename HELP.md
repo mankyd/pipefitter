@@ -5,9 +5,10 @@ hose) to another. You can change the inner and outer diameter of each section, a
 bends between the sections.
 
 The pipe is built as a chain of straight **sections** joined by **bends**: Section 1, Bend 1, Section 2, Bend 2,
-Section 3, and so on. The first and last section headers have a **+ Section** button that adds a new end section (the
-first prepends, the last appends, each copying the section it was created from), and a **✕** button to remove an end
-section. You can click on any section header to collapse it and make more room.
+Section 3, and so on. The simplest pipe is a single straight section with no bends at all. The first and last section
+headers have a **+ Section** button that adds a new end section (the last appends, the first prepends, each copying the
+section it was created from), and a **✕** button to remove an end section. A single section is both first and last, so
+its **+ Section** appends. You can click on any section header to collapse it and make more room.
 
 ## Straight Sections
 
@@ -17,7 +18,10 @@ length. Use **Mimic Previous Section** / **Mimic Next Section** buttons to match
 
 ### End Treatment
 
-Only the **first and last** sections have an **End Treatment** (the two open ends of the pipe):
+Only the **first and last** sections have an **End Treatment** (the two open ends of the pipe). The first section
+carries the **left end**, the last carries the **right end** — and a lone section carries both, one after the other in
+its card, each labelled with its side. Two treatments on one section split its length between them, so each has half
+the run to work in:
 
 - **Plain** is just a flat end.
 - **Chamfer** lets you apply a taper to either the inside of the pipe, the outside of the pipe, or both. You can

@@ -1823,6 +1823,37 @@ function setRenderStyle(name) {
 // axis lines through the origin.
 const GRID_LINE_PX = 1.6, GRID_AXIS_PX = 2.6;
 
+// Floor-grid spacing. The camera frames the part to a constant fraction of the
+// canvas (orbit.dist = span · FRAME_K · fitK), so holding the grid to a fixed
+// number of squares across the part is what keeps its on-screen density steady
+// whatever size the part is.
+//
+// The spacing still has to be a round number to be worth reading, so the ideal
+// span/TARGET is snapped to a 1-2-5 rung. That snap is chosen on a LOG scale:
+// the rungs are multiplicative, so an ideal of 14 belongs to 20, not to 10.
+// Picking it by linear distance (or by hard thresholds on the span, as this
+// once did) puts the boundaries in the wrong places - a part whose span sits
+// near one then flips between two densities under a change far too small to
+// warrant it.
+//
+// Even correctly placed, a boundary is a 2x jump. HYSTERESIS keeps the rung
+// currently in use until the ideal drifts clear of it by more than the snap
+// alone would need, so nudging a bend angle can't halve the grid underfoot;
+// crossing has to be deliberate. The grid is view furniture - it isn't
+// exported, serialized, or part of the model - so letting it depend a little
+// on where it came from costs nothing that matters.
+const GRID_TARGET = 12;                              // squares across the part
+const GRID_NICE = [1, 2, 5, 10, 20, 50, 100, 200, 500];
+const GRID_STICK = Math.log(1.6);                    // how far the ideal may drift before re-snapping
+function gridStepFor(span) {
+  const ideal = Math.max(span, 1e-6) / GRID_TARGET;
+  const off = (n) => Math.abs(Math.log(n / ideal));
+  if (gridStep && off(gridStep) < GRID_STICK) return gridStep;
+  let best = GRID_NICE[0];
+  for (const n of GRID_NICE) if (off(n) < off(best)) best = n;
+  return best;
+}
+
 // (Re)build the floor grid at `step` mm spacing over `cells` cells. Its colors
 // and spacing are baked in, so both a spacing change and a theme change mean a
 // fresh one.
@@ -2028,7 +2059,7 @@ function syncMesh(first) {
     orbit.target.set(0, g.bbox.size[1] / 2, 0);
     framed = true;
   }
-  const stepMm = span > 120 ? 20 : span > 60 ? 10 : 5;
+  const stepMm = gridStepFor(span);
   const cells = Math.max(8, Math.ceil((span * 2) / stepMm));
   if (gridKey !== stepMm + ':' + cells) {
     gridKey = stepMm + ':' + cells;

@@ -11,7 +11,7 @@
 // last, so it carries both and the two treatments split its length between them
 // (see endAvail). Interior sections are pure constant-profile straight runs.
 // Each bend owns the diameter/wall transition between its two neighboring
-// sections. All bends lie in one plane; a bend's `ang` is SIGNED ([-90,90]) -
+// sections. All bends lie in one plane; a bend's `ang` is SIGNED ([-180,180]) -
 // its sign is the turn direction.
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -22,7 +22,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 // ── Parameter limits ─────────────────────────────────────────────────────────
 export const SECTION_LIMITS = { id: [1, 120], w: [0.4, 20], l: [3, 200] };
 export const BEND_LIMITS = {
-  ang: [-90, 90], l2: [0, 200], idm: [1, 120], w2: [0.4, 20],
+  ang: [-180, 180], l2: [0, 200], idm: [1, 120], w2: [0.4, 20],
   idmSmooth: [0, 1], w2Smooth: [0, 1],
 };
 export const END_LIMITS = {

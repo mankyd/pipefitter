@@ -53,10 +53,11 @@ the run to work in:
 
 ## Bends
 
-Each bend joins two neighboring sections. Set its angle anywhere from -90° to 90° - the sign chooses which way it
-turns, so two bends with alternating signs make an S-shape. An angle of 0° is a straight transition. The **Length**
-option measures the bend's length when it is straight, but changes to measure the arc length along the outside of the
-inner bend once there is any angle. All bends share one plane.
+Each bend joins two neighboring sections. Set its angle anywhere from -180° to 180° - the sign chooses which way it
+turns, so two bends with alternating signs make an S-shape. An angle of 0° is a straight transition, and ±180° is a
+full U-turn that doubles the pipe back on itself. The **Length** option measures the bend's length when it is
+straight, but changes to measure the arc length along the outside of the inner bend once there is any angle. All
+bends share one plane.
 
 The limits to the minimum arc length depending on if the thicknesses and diameters of all the adjoining sections.
 If all sections are equal in diameter and thickness, the arc length can be set below 1mm. As variations are 

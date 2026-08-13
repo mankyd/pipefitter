@@ -616,6 +616,7 @@ function addPipe(where) {
     p.pipes.push(np);
   } else {
     shiftCollapsedPipes(0, 1);                       // every existing pipe moves up one
+    shiftHiddenPipes(0, 1);
     p.pipes.unshift(np);
   }
   // Fold away the pipe this one grew from: the panel is now about the new part,
@@ -636,7 +637,27 @@ function removePipe(j) {
     if (g && g.pi === j) collapsedGroups.delete(id);
   }
   shiftCollapsedPipes(j + 1, -1);
+  hiddenPipes.delete(j);
+  shiftHiddenPipes(j + 1, -1);
   commit(geo.normalizeChain(p), null);
+}
+
+// Show/hide one pipe in the 3D view. A view-only toggle, so it doesn't touch
+// state.params or the undo history - just flips the mesh's visibility and the
+// joint rings that depend on it, then repaints.
+function togglePipeHidden(pi) {
+  if (hiddenPipes.has(pi)) hiddenPipes.delete(pi); else hiddenPipes.add(pi);
+  applyPipeVisibility();
+}
+function applyPipeVisibility() {
+  meshes.forEach((m, j) => { m.visible = !hiddenPipes.has(j); });
+  const g = geometry();
+  if (g && meshGroup) {
+    const cx = (g.bbox.min[0] + g.bbox.max[0]) / 2;
+    const cz = (g.bbox.min[2] + g.bbox.max[2]) / 2;
+    syncJointRings(g, cx, g.bbox.min[1], cz);   // rings on a now-hidden joint drop out
+  }
+  draw();
 }
 
 function geometry() {
@@ -1017,6 +1038,9 @@ function groupModel(chain) {
       footer: pipeFoot,
       onRemove: ((firstPipe || lastPipe) && nPipes > 1) ? () => removePipe(pi) : null,
       removeTitle: 'Remove this pipe',
+      // With more than one pipe, each can be hidden from the 3D view on its own.
+      onToggleHide: nPipes > 1 ? () => togglePipeHidden(pi) : null,
+      hidden: hiddenPipes.has(pi),
       controls: [],
     });
 
@@ -1114,6 +1138,16 @@ function groupModel(chain) {
 let panelSig = '';
 let panelBuilt = false;              // false until the first build, which starts every group collapsed
 const collapsedGroups = new Set();   // group ids whose body is collapsed (persists across rebuilds)
+// Pipes the user has hidden from the 3D view (by pipe index). A view-only state:
+// the geometry is still built and still counts toward the bbox, so hiding one
+// pipe never shifts the others. Indices are positional, so an add/remove that
+// renumbers pipes has to shift these in step - like collapsedGroups.
+const hiddenPipes = new Set();
+function shiftHiddenPipes(from, delta) {
+  const next = new Set();
+  for (const idx of hiddenPipes) next.add(idx >= from ? idx + delta : idx);
+  hiddenPipes.clear(); next.forEach((i) => hiddenPipes.add(i));
+}
 
 // Group ids are positional - p<j> for a whole pipe, p<j>s<i> / p<j>b<i> for a
 // section or bend inside it - so an insert or remove that renumbers anything
@@ -1303,6 +1337,11 @@ function bindSchematicDrag() {
   cap.addEventListener('pointercancel', end);
 }
 
+// Eye glyphs for the per-pipe show/hide toggle. Inline SVG (stroke follows the
+// button's text colour) so the open/closed state reads at a glance.
+const EYE_OPEN = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8s2.6-4.3 7-4.3S15 8 15 8s-2.6 4.3-7 4.3S1 8 1 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>';
+const EYE_CLOSED = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 6.2S4 10 8 10s6.5-3.8 6.5-3.8"/><path d="M3 8.6 2 10.4"/><path d="M6 9.9l-.5 2"/><path d="M10 9.9l.5 2"/><path d="M13 8.6 14 10.4"/></svg>';
+
 function h(tag, cls, attrs) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -1347,6 +1386,19 @@ function groupHead(g, node, cls) {
     toggle.setAttribute('aria-expanded', String(!nowCollapsed));
   });
   head.append(toggle, h('span', 'group-rule'));
+  if (g.onToggleHide) {
+    const btn = h('button', 'btn btn-secondary group-mirror group-eye', { type: 'button' });
+    const paint = (hidden) => {
+      btn.innerHTML = hidden ? EYE_CLOSED : EYE_OPEN;
+      btn.classList.toggle('is-hidden', hidden);
+      btn.setAttribute('aria-pressed', String(hidden));
+      const t = hidden ? 'Show this pipe in the 3D view' : 'Hide this pipe from the 3D view';
+      btn.title = t; btn.setAttribute('aria-label', t);
+    };
+    paint(g.hidden);
+    btn.addEventListener('click', () => { g.onToggleHide(); paint(hiddenPipes.has(g.index)); });
+    head.append(btn);
+  }
   if (g.onRemove) {
     const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: g.removeTitle || 'Remove' });
     btn.textContent = '✕';
@@ -2222,6 +2274,7 @@ function syncMesh(first) {
     const bg = pipeBufferGeometry(gp, cx, my, cz);
     meshes[j].geometry.dispose();
     meshes[j].geometry = bg;
+    meshes[j].visible = !hiddenPipes.has(j);
   });
   syncJointRings(g, cx, my, cz);
 
@@ -2262,6 +2315,7 @@ function jointRingSpecs(g) {
   const specs = [];
   const pipes = g.p.pipes;
   for (let j = 0; j < pipes.length - 1; j++) {
+    if (hiddenPipes.has(j) || hiddenPipes.has(j + 1)) continue;   // a joint needs both its pipes
     const left = pipes[j].sections[pipes[j].sections.length - 1].endB;
     const right = pipes[j + 1].sections[0].endA;
     if (!left || !right || left.type !== right.type) continue;

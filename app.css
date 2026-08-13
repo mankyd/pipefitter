@@ -254,7 +254,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
 .pipe-block {
   position: relative;
   display: flex; flex-direction: column; gap: var(--space-8); min-width: 0;
-  padding: var(--space-4) var(--space-3) var(--space-6);
+  padding: var(--space-6) var(--space-3) var(--space-6);
   border: 1px solid var(--color-neutral-800); border-radius: var(--radius-md);
 }
 /* The two "+ Pipe" joins straddle the block's edge - near-end on the top border,
@@ -332,6 +332,16 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   padding: 2px 7px; font-size: 11px;
   white-space: nowrap; border-radius: var(--radius-sm);
 }
+/* Per-pipe show/hide eye: a square icon button holding an inline SVG. Dimmed
+   when the pipe is hidden, so its state reads even without hovering. */
+.group-eye {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 2px 6px; flex: 0 0 auto;
+}
+/* Sized to the text line-box of the sibling buttons (1.2em of the shared 11px
+   font) so the eye button ends up exactly as tall as the close button. */
+.group-eye svg { display: block; width: 1.2em; height: 1.2em; }
+.group-eye.is-hidden { color: var(--color-neutral-500); opacity: 0.85; }
 
 .presets {
   display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 2px 0 6px;

@@ -107,6 +107,13 @@ let renderer, scene, camera, meshGroup, material, grid, hemiLight;
 // objects rather than one merged buffer: the parts are separate in the world
 // too, and keeping them apart is what lets the view treat one on its own.
 const meshes = [];
+// One bright-blue dashed line loop per flush joint, so a place where two pipes
+// meet with no feature of their own (butt, bolted flange, bevel-less chamfer)
+// is easy to spot. Parented to meshGroup like the pipe meshes and rebuilt
+// alongside them. A line, not a solid ring, so it sits on the wall without any
+// thickness of its own to stand proud of the surface.
+const jointRings = [];
+let jointRingMat = null;
 let gridStep = 10, gridCells = 20;   // current floor-grid spacing, so a theme change can rebuild it
 let orbit = null;
 let fitK = 1;
@@ -2216,6 +2223,7 @@ function syncMesh(first) {
     meshes[j].geometry.dispose();
     meshes[j].geometry = bg;
   });
+  syncJointRings(g, cx, my, cz);
 
   span = Math.max(g.bbox.size[0], g.bbox.size[1], g.bbox.size[2]);
   if (first || !framed) {
@@ -2231,6 +2239,99 @@ function syncMesh(first) {
     makeGrid(stepMm, cells);
   }
   draw();
+}
+
+// The joints that get a bright-blue ring: adjacent pipes whose mating faces
+// meet flush, with no feature of their own to mark where one pipe ends and the
+// next begins. Three cases, all needing both ends the same type (a chamfer can
+// face a slip-joint stub, which is already distinct — the type check drops it):
+//   • plain    — a bare butt joint.
+//   • flange   — two flanges bolted face to face; ring the flange rims.
+//   • chamfer with no outer bevel — an outer chamfer only cuts material when
+//     both its depth (ChX) and radial drop (ChY) are non-zero, so if either is
+//     0 on both sides the outer walls run flush to the seam and it reads
+//     exactly like a butt joint.
+// A chamfer with an outer bevel, a slip joint, barbs, or teeth all show the
+// seam on their own, so they get no ring. Each spec carries the joint centre
+// `P` and axis `T` (assembly coords) and the outer Ø the ring should encircle.
+// An outer chamfer removes material only when it has both axial depth (ChX) and
+// a radial drop (ChY); zero either dimension and the outer edge stays flush.
+const noOuterChamfer = (e) => !(e.ChX > 0) || !(e.ChY > 0);
+
+function jointRingSpecs(g) {
+  const specs = [];
+  const pipes = g.p.pipes;
+  for (let j = 0; j < pipes.length - 1; j++) {
+    const left = pipes[j].sections[pipes[j].sections.length - 1].endB;
+    const right = pipes[j + 1].sections[0].endA;
+    if (!left || !right || left.type !== right.type) continue;
+    const gl = g.pipes[j], gr = g.pipes[j + 1];
+    const odL = gl.od[gl.od.length - 1], odR = gr.od[0];
+    let od;
+    if (left.type === 'plain') {
+      od = Math.max(odL, odR);
+    } else if (left.type === 'flange') {
+      od = Math.max(odL + 2 * left.Fw, odR + 2 * right.Fw);   // rim = OD/2 + Fw
+    } else if (left.type === 'chamfer' && noOuterChamfer(left) && noOuterChamfer(right)) {
+      od = Math.max(odL, odR);
+    } else {
+      continue;
+    }
+    const ep = gl.endPoints[1];
+    specs.push({ P: ep.P, T: ep.T, od });
+  }
+  return specs;
+}
+
+// A ring of points tracing the joint circle: a closed dashed loop of `RING_SEG`
+// segments at the wall radius, in the plane whose normal is the joint tangent
+// `T`. Built in an axis-perpendicular basis (u, v) so it wraps the pipe however
+// the joint is oriented. A hair proud of the wall keeps the line crisp rather
+// than z-fighting the surface it lies on. Offset by (cx,my,cz) like the meshes.
+const RING_SEG = 128;
+function jointRingPositions(sp, cx, my, cz) {
+  const axis = new THREE.Vector3(sp.T[0], sp.T[1], sp.T[2]).normalize();
+  const ref = Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+  const u = new THREE.Vector3().crossVectors(axis, ref).normalize();
+  const v = new THREE.Vector3().crossVectors(axis, u);   // unit: axis ⟂ u, both unit
+  const r = sp.od / 2 + Math.max(0.03, sp.od * 0.002);   // sits on the wall, not standing off it
+  const pos = new Float32Array((RING_SEG + 1) * 3);
+  for (let k = 0; k <= RING_SEG; k++) {
+    const a = (2 * Math.PI * k) / RING_SEG, ca = Math.cos(a), sa = Math.sin(a);
+    pos[k * 3] = sp.P[0] + r * (ca * u.x + sa * v.x) - cx;
+    pos[k * 3 + 1] = sp.P[1] + r * (ca * u.y + sa * v.y) - my;
+    pos[k * 3 + 2] = sp.P[2] + r * (ca * u.z + sa * v.z) - cz;
+  }
+  return pos;
+}
+
+// Reconcile the ring lines with the current flush joints, mirroring how
+// syncMesh manages the pipe meshes: pop/dispose extras, create as needed, then
+// rebuild each loop's geometry. LineDashedMaterial needs per-vertex distances,
+// so computeLineDistances() runs after each geometry swap.
+function syncJointRings(g, cx, my, cz) {
+  const specs = jointRingSpecs(g);
+  if (specs.length && !jointRingMat) {
+    jointRingMat = new THREE.LineDashedMaterial({ color: 0x1e90ff, dashSize: 1.6, gapSize: 1.1 });
+  }
+  while (jointRings.length > specs.length) {
+    const r = jointRings.pop();
+    meshGroup.remove(r);
+    r.geometry.dispose();
+  }
+  while (jointRings.length < specs.length) {
+    const line = new THREE.Line(new THREE.BufferGeometry(), jointRingMat);
+    meshGroup.add(line);
+    jointRings.push(line);
+  }
+  specs.forEach((sp, i) => {
+    const line = jointRings[i];
+    line.geometry.dispose();
+    const bg = new THREE.BufferGeometry();
+    bg.setAttribute('position', new THREE.BufferAttribute(jointRingPositions(sp, cx, my, cz), 3));
+    line.geometry = bg;
+    line.computeLineDistances();
+  });
 }
 
 function bindControls(node) {

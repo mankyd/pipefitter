@@ -59,9 +59,9 @@ full U-turn that doubles the pipe back on itself. The **Length** option measures
 straight, but changes to measure the arc length along the outside of the inner bend once there is any angle. All
 bends share one plane.
 
-The limits to the minimum arc length depending on if the thicknesses and diameters of all the adjoining sections.
-If all sections are equal in diameter and thickness, the arc length can be set below 1mm. As variations are 
-introduced, the arc length may increase.
+The minimum arc length depends on the diameters and wall thicknesses of the adjoining sections: a bend can never
+turn tighter than its own outer surface allows, so large diameters and thick walls raise the floor. At the very
+tightest setting the inside of the bend closes into a sharp crease.
 
 By default a bend blends the inner diameter and wall thickness **smoothly** from one neighboring section to the
 other. Turn off **Continuous Ø** or **Continuous thickness** to instead set a fixed value at the middle of the

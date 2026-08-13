@@ -649,68 +649,24 @@ function innerFaceLength(tr, A, R) {
 // Smallest R (for a bend of half-angle-span A radians) that keeps the concave
 // face clear of the centerline. The hard limit is R > maxOuter: at R = maxOuter
 // the concave surface passes through the pivot and the sweep degenerates (below
-// it, the solid self-intersects). How much clearance to hold above that depends
-// on how the wall is built. (A straight run has no bend, so this is unused.)
-const BEND_CLEARANCE = 0.02;      // × maxOuter — the razor-cusp margin
-// The shortest concave face the mesh can still resolve. The face is sampled at
+// it, the solid self-intersects). The margin above that is only what the mesh
+// needs to resolve the face: the construction (envelopeChains) reads the wall
+// off the union of pen circles directly, so a profile that turns tighter than
+// its own thickness renders as a filled crease rather than a fold — no extra
+// clearance is required for ANY profile, constant or varying. (A straight run
+// has no bend, so this is unused.)
+// The shortest concave face the mesh can still resolve: the face is sampled at
 // the bend's own station count, so what has to stay above float noise is its
-// LENGTH, not the corner radius: squeeze either the radius or the angle far
+// LENGTH, not the corner radius — squeeze either the radius or the angle far
 // enough and neighbouring stations land on the same point, collapsing triangles
 // on the concave side. Two microns is ~50× the shortest face that still meshed
 // cleanly in testing, and is orders of magnitude below any printable feature.
 const MIN_FACE_ARC = 0.002;       // mm
-const FOLD_SAFETY = 2;            // × the measured clearance at which the face folds
-// Keyed on the transition's numbers and the angle — the only things the answer
-// depends on. Bounded because a drag sweeps a value through many settings.
-const minRadiusMemo = new Map();
-// The flat margin this used to enforce for every varying transition: two wall
-// thicknesses of clearance. Still the known-safe ceiling the measured floor is
-// searched below, and the fallback whenever measuring doesn't beat it.
-function bendSafeRadius(tr) {
-  let mx = 0;
-  for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
-  return mx + Math.max(2 * transitionMaxWall(tr), BEND_CLEARANCE * mx);
-}
 function minBendRadius(tr, A) {
   const a = Math.max(Math.abs(A), 1e-6);
-  const key = tr.idA + ',' + tr.idB + ',' + tr.idm + ',' + tr.wA + ',' + tr.wB + ',' + tr.w2 +
-    ',' + (tr.idmSmooth ? 1 : 0) + ',' + (tr.w2Smooth ? 1 : 0) + ',' + a;
-  const hit = minRadiusMemo.get(key);
-  if (hit !== undefined) return hit;
-
   let mx = 0;
   for (let i = 0; i <= 40; i++) mx = Math.max(mx, outerAtT(tr, i / 40));
-  // The floor every bend shares: enough face for the mesh to resolve (see
-  // MIN_FACE_ARC). A CONSTANT profile is swept from the exact radial profile
-  // (see profileAt) — every station is a plain annulus, so the wall and bore
-  // hold their nominal thickness at any R > mx and nothing else can go wrong.
-  const lo = mx + MIN_FACE_ARC / a;
-  let R = lo;
-  if (transitionVaries(tr)) {
-    // A VARYING profile is meshed as a disc envelope, which CAN cusp: the
-    // concave face folds through itself once the bend turns tighter than the
-    // wall's own rounding (see envFaceFolds). Where that happens is a property
-    // of the actual smoothed shape, not of the wall thickness, so measure it —
-    // a fixed margin is either far too conservative (most reductions never fold
-    // at any radius) or, for an extreme wall jump, in the wrong place entirely.
-    // The old flat 2·wall margin is the search ceiling and the fallback: it is
-    // known-safe, so this can only ever loosen the limit, never tighten it.
-    const safe = bendSafeRadius(tr);
-    if (envFaceFolds(tr, a, lo)) {
-      if (envFaceFolds(tr, a, safe)) R = safe;            // ceiling folds too — keep it
-      else {
-        let bad = lo, good = safe;                        // bisect the fold boundary
-        for (let i = 0; i < 18; i++) {
-          const mid = (bad + good) / 2;
-          if (envFaceFolds(tr, a, mid)) bad = mid; else good = mid;
-        }
-        R = Math.min(safe, mx + FOLD_SAFETY * (good - mx));
-      }
-    }
-  }
-  if (minRadiusMemo.size > 400) minRadiusMemo.clear();
-  minRadiusMemo.set(key, R);
-  return R;
+  return mx + MIN_FACE_ARC / a;
 }
 
 // The thinnest wall the transition carries, and its total outer-radius change.
@@ -748,7 +704,11 @@ function solveBendRadius(tr, A, target) {
 // junction planes. Both the length measurement and the fold test read this same
 // curve, so what gets measured is what gets meshed. Returns null when the
 // envelope came back too short to clip.
-function envConcaveFace(tr, A, R, leadA, leadB) {
+// The envelope chains over a local model of the bend: an arc of radius R
+// between two straight leads, in a scratch frame. Face lengths and fold tests
+// are invariant to the rigid placement, so this is the same curve the mesher
+// builds in assembly space.
+function envArcChains(tr, A, R, leadA, leadB) {
   const arc = R * A;
   const at = (s) => {
     if (s <= 0) return { P: [s, 0, 0], T: [1, 0, 0] };
@@ -757,7 +717,12 @@ function envConcaveFace(tr, A, R, leadA, leadB) {
     if (s >= arc) { const d = s - arc; P[0] += d * c; P[1] += d * sn; }
     return { P, T: [c, sn, 0] };
   };
-  const st = envelopeChains({ tr, sStart: 0, sEnd: arc }, { at }, leadA, leadB).outer;
+  return envelopeChains({ tr, sStart: 0, sEnd: arc }, { at }, leadA, leadB);
+}
+
+function envConcaveFace(tr, A, R, leadA, leadB) {
+  const arc = R * A;
+  const st = envArcChains(tr, A, R, leadA, leadB).outer;
   if (st.length < 2) return null;
   // Concave side: whichever envelope edge runs nearer the bend pivot (0, R).
   const pt = (q, sgn) => [q.C[0] + sgn * q.r * q.v[0], q.C[1] + sgn * q.r * q.v[1]];
@@ -788,37 +753,6 @@ function envFaceLength(tr, A, R, leadA, leadB) {
   return L;
 }
 
-// Does the concave face cross itself at this radius? That crossing IS the cusp:
-// the wall's two surfaces are its centerline guide offset by half a wall, and an
-// offset curve folds exactly where the guide turns tighter than the offset
-// distance. Bend curvature adds to the profile's own, so tightening a bend can
-// push a transition that already turns near the wall scale over the edge. Tested
-// on the built curve rather than predicted from a rule of thumb, because the
-// guide is smoothed (ENV_ROUND) before it is wrapped — the shape that folds is
-// not the nominal profile. Leads are the nominal 0.75·wall the mesher would use;
-// they run inside the straight sections, where the guide has no curvature to
-// contribute, so the floor stays a property of the transition and its angle
-// alone (and doesn't shift when a neighbouring section is resized).
-function envFaceFolds(tr, A, R) {
-  const lead = 0.75 * transitionMaxWall(tr);
-  const p = envConcaveFace(tr, A, R, lead, lead);
-  if (!p || p.length < 4) return false;
-  const crosses = (a, b, c, d) => {
-    const r = [b[0] - a[0], b[1] - a[1]], s = [d[0] - c[0], d[1] - c[1]];
-    const den = r[0] * s[1] - r[1] * s[0];
-    if (Math.abs(den) < 1e-15) return false;            // parallel: no transversal crossing
-    const t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / den;
-    const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
-    return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9;
-  };
-  for (let i = 0; i < p.length - 1; i++) {
-    for (let j = i + 2; j < p.length - 1; j++) {         // skip the shared-vertex neighbour
-      if (crosses(p[i], p[i + 1], p[j], p[j + 1])) return true;
-    }
-  }
-  return false;
-}
-
 // Solve R so the DRAWN concave-face length equals the requested B. The analytic
 // solve is the fast inner model; its target is corrected until the
 // envelope-measured face converges (the two differ by a slowly-varying offset,
@@ -827,21 +761,8 @@ function envFaceFolds(tr, A, R) {
 // reports the face floor — the drawn length at the tightest radius, which is
 // exactly what the schematic shows when the request is clamped up to it.
 function solveBendFace(tr, A, target, leadA, leadB) {
-  let lo = minBendRadius(tr, A);
-  let minFace = envFaceLength(tr, A, lo, leadA, leadB);
-  // The measured face is NOT monotone in R. Across a big reduction taken at a
-  // shallow angle the profile's radial travel dominates its arc: shrinking R
-  // shortens the arc that travel must happen over, tilting the face steeper and
-  // making it LONGER. So the tightest radius doesn't always give the shortest
-  // face. Measure the old flat margin too — with these leads, not nominal ones —
-  // and keep whichever is genuinely shorter, so the floor can only improve.
-  if (transitionVaries(tr)) {
-    const safe = bendSafeRadius(tr);
-    if (safe > lo) {
-      const faceSafe = envFaceLength(tr, A, safe, leadA, leadB);
-      if (faceSafe < minFace) { lo = safe; minFace = faceSafe; }
-    }
-  }
+  const lo = minBendRadius(tr, A);
+  const minFace = envFaceLength(tr, A, lo, leadA, leadB);
   if (minFace >= target) return { R: lo, clamped: true, minFace };
   let t = target, R = lo;
   for (let k = 0; k < 6; k++) {
@@ -866,26 +787,34 @@ function transitionMaxWall(tr) {
   return mx;
 }
 
-// ── Disc-envelope wall construction ──────────────────────────────────────────
+// ── Pen-stroke wall construction ─────────────────────────────────────────────
 // A transition's wall is built the way a draftsman would ink it: run a guide
 // curve along the wall's CENTERLINE (top of the pipe and bottom of the pipe
-// separately, in the bend plane), string a series of circles along it — each
-// with a diameter of the wall thickness called for at that point — and wrap the
-// envelope of those circles with tangent runs from circle to circle. The two
-// envelope chains ARE the outer surface and the bore, so the wall is a full
-// circle-diameter thick everywhere by construction — at any transition length
-// (even zero, where it collapses to a rounded shoulder) and around any bend.
-// Where a tight bend bunches the circles until they overlap (the concave side),
-// tangent points that land inside a neighbouring circle are trimmed away: the
-// wall there comes out thicker than specified, never thinner. The matched
-// top/bottom chains are then paired into cross-section rings (center = midpoint,
-// radius = half the gap) and revolved; ring centers may drift slightly off the
-// nominal centerline through a bend, which is exactly what keeps the in-plane
-// walls true.
-const ENV_STEP_WALLS = 0.25;      // guide sampling step, × the local min wall
-const ENV_MAX_SAMPLES = 600;      // circles per guide curve
-const ENV_STATION_STEP = 0.3;     // ring spacing along the chains, mm
-const ENV_ROUND = 0.75;           // guide corner rounding, × the local wall
+// separately, in the bend plane) and stroke it with a pen whose width is the
+// wall thickness called for at each point. The stroke — the union of the pen's
+// circles — IS the wall: at each cross-section station the mesh reads the
+// stroke off directly, casting the station's own ray and taking how far the
+// nearby circles reach along it (see reach). The outer surface is the far
+// edge of that run of ink, the bore the near edge, so the wall is a full
+// pen-width thick everywhere by construction — at any transition length,
+// around any bend, and through any fold: a profile that turns tighter than
+// the pen renders as a filled crease, thicker than specified, never thinner.
+// Everything is evaluated from the smooth analytic profile (transitionAt) and
+// the analytic path, so the surfaces inherit the blends' own C¹ continuity;
+// there are no smoothing passes. (A predecessor wrapped tangent lines around
+// box-average-smoothed sample positions instead; averaging positions on an
+// arc of radius ρ over a window h pulls them inward by ~h²/6ρ, and the window
+// width varied along the chain, so the sag modulated into visible surface
+// ripple on every bent varying transition.)
+// The two sides' rays are paired into cross-section rings (center = midpoint,
+// radius = half the gap) and revolved; ring centers may drift slightly off
+// the nominal centerline through a transition, which is exactly what keeps
+// the in-plane walls true.
+const ENV_STEP_WALLS = 0.25;      // sample spacing, × the local min wall
+const ENV_MAX_SAMPLES = 600;      // samples per transition
+const ENV_STATION_STEP = 0.3;     // target sample spacing along the stroke, mm
+const ENV_SHOULDER = 0.75;        // axial spread of a hard shoulder, × max wall
+const ENV_LEAD_USE = 0.6;         // fraction of a lead a shoulder may borrow
 
 // Does the transition change shape at all? A constant bore + constant wall
 // needs no envelope — the plain radial profile is already exact.
@@ -899,199 +828,288 @@ function transitionVaries(tr) {
   return (iMax - iMin) > 1e-6 || (wHi - wLo) > 1e-6;
 }
 
-// Build the four envelope chains for one transition segment and pair them into
-// ring stations. Returns { outer, inner } station lists; a station is
+// Build one transition segment's wall as ring stations read off the pen
+// stroke. Returns { outer, inner } station lists; a station is
 // { s, r, C:[x,y], v:[x,y] } — a cross-section ring centered at C (bend plane),
-// radius r, meeting its top/bottom envelope points at C ± r·v. leadA/leadB
-// extend the guide a short way into the neighbouring straight sections (where
-// the envelope IS the neighbour's cylinder), so the chains always start and end
-// flush with the sections — a zero-length transition's end circles poke half a
-// wall past the junction, and without the leads the chains would start there,
-// axially offset from the section rings, folding the mesh back on itself.
+// radius r, meeting the two surface edges at C ± r·v. leadA/leadB extend the
+// stroke a short way into the neighbouring straight sections (where it IS the
+// neighbour's cylinder), so the stations always start and end flush with the
+// sections even when a shoulder's ramp reaches past the junction.
 function envelopeChains(seg, path, leadA, leadB) {
   const tr = seg.tr, len = seg.sEnd - seg.sStart;
-  const wMin = Math.max(transitionMinWall(tr), 0.1);
-  const mAt = (t) => { const q = transitionAt(tr, t); return q.inner + q.wall / 2; };
-  const travel = Math.abs(mAt(1) - mAt(0));
   const span = leadA + len + leadB;
-  const n = clamp(Math.ceil((span + travel + 1) / (wMin * ENV_STEP_WALLS)), 48, ENV_MAX_SAMPLES);
-  // Guide parameter u∈[0,1] covers lead-in, transition, lead-out by "virtual
-  // length" — the transition's share includes its radial travel so a zero-length
-  // shoulder still gets its samples.
-  const vLen = Math.max(len + travel, 1e-6), vTotal = leadA + vLen + leadB;
-  const paramAt = (u) => {
-    const d = u * vTotal;
-    if (d <= leadA) return { s: seg.sStart - (leadA - d), t: 0 };
-    if (d >= leadA + vLen) return { s: seg.sEnd + (d - leadA - vLen), t: 1 };
-    const t = (d - leadA) / vLen;
-    return { s: seg.sStart + t * len, t };
+  const sBase = seg.sStart - leadA;
+
+  // The blend window [w0,w1] in span distance d: where t sweeps 0→1 —
+  // normally the transition's own span, but never shorter than ENV_SHOULDER
+  // of the largest wall. A too-short blend is spread past the junctions,
+  // centered on the segment and borrowing at most ENV_LEAD_USE of each lead,
+  // so a zero-length shoulder (or a tiny-angle bend asked to swallow a big
+  // reduction) becomes a steep MONOTONE ramp instead of a cornered step or an
+  // overhang the station model can't hold. The blends' zero end slopes keep
+  // the window edges C¹ wherever they land, and the chain endpoints stay on
+  // untouched cylinder.
+  const half = ENV_SHOULDER * transitionMaxWall(tr) / 2;
+  const c = leadA + len / 2;
+  const w0 = c - Math.max(len / 2, Math.min(half, ENV_LEAD_USE * leadA + len / 2));
+  const w1 = c + Math.max(len / 2, Math.min(half, ENV_LEAD_USE * leadB + len / 2));
+  const wSpan = Math.max(w1 - w0, 1e-6);
+  const guideAt = (d) => {
+    const { P, T } = path.at(sBase + d);
+    const { inner, wall } = transitionAt(tr, clamp((d - w0) / wSpan, 0, 1));
+    return { P, T, v: [T[1], -T[0]], m: inner + wall / 2, r: wall / 2 };
   };
 
-  const side = (sideSign) => {
-    // the guide circles: centers on this side's midwall trace, radius = wall/2
-    const cs = [], Rs = [], Ps = [];
-    for (let i = 0; i <= n; i++) {
-      const { s, t } = paramAt(i / n);
-      const { P, T } = path.at(s);
-      const v = [T[1], -T[0]];
-      const { inner, wall } = transitionAt(tr, t);
-      const m = inner + wall / 2;
-      cs.push([P[0] + sideSign * m * v[0], P[1] + sideSign * m * v[1]]);
-      Rs.push(wall / 2);
-      Ps.push(P);
-    }
-    // Round the guide before wrapping it: box-average the circle centers (and
-    // radii) over ± ENV_ROUND × the local wall of guide arc. A zero-length
-    // shoulder's hard axial→radial turns become wall-scale fillets — the
-    // envelope of circles only rounds a corner's convex side, so the guide
-    // itself must carry the rounding for the inside corners. Straight and
-    // already-smooth stretches are untouched (averaging collinear samples is a
-    // no-op), and the window tapers to zero at the chain ends so the junctions
-    // with the straight sections stay exact.
-    const acc = [0];
-    for (let i = 1; i <= n; i++) acc.push(acc[i - 1] + Math.hypot(cs[i][0] - cs[i - 1][0], cs[i][1] - cs[i - 1][1]));
-    const totalArc = acc[n];
-    if (totalArc > 1e-9) {
-      // Window widths: wall-scaled, tapering to zero at the ends — and
-      // Lipschitz-limited so the width never changes faster than half the arc
-      // it spans. Where the wall collapses abruptly (a thick tube meeting a
-      // thin one) an unrestrained width jump lets neighbouring averages
-      // leapfrog, folding the smoothed guide back on itself — which flips the
-      // tangent and swaps the bore onto the outer side.
-      const hs = [];
-      for (let i = 0; i <= n; i++) hs.push(Math.min(ENV_ROUND * 2 * Rs[i], acc[i], totalArc - acc[i]));
-      for (let i = 1; i <= n; i++) hs[i] = Math.min(hs[i], hs[i - 1] + 0.5 * (acc[i] - acc[i - 1]));
-      for (let i = n - 1; i >= 0; i--) hs[i] = Math.min(hs[i], hs[i + 1] + 0.5 * (acc[i + 1] - acc[i]));
-      const smC = [], smR = [];
-      for (let i = 0; i <= n; i++) {
-        const h = hs[i];
-        if (h < 1e-9) { smC.push(cs[i]); smR.push(Rs[i]); continue; }
-        let sx = 0, sy = 0, sr = 0, cnt = 0;
-        for (let j = i; j >= 0 && acc[i] - acc[j] <= h; j--) { sx += cs[j][0]; sy += cs[j][1]; sr += Rs[j]; cnt++; }
-        for (let j = i + 1; j <= n && acc[j] - acc[i] <= h; j++) { sx += cs[j][0]; sy += cs[j][1]; sr += Rs[j]; cnt++; }
-        smC.push([sx / cnt, sy / cnt]);
-        smR.push(sr / cnt);
+  // Sample placement: uniform in chain travel, not in d, so the long convex
+  // side of a tight bend and the radial run of a steep shoulder get their fair
+  // share. A coarse pass measures how far the two side guides (and the pen
+  // width) move per interval; the fine grid is laid down uniformly in that
+  // measure.
+  const M = 64;
+  const acc = [0];
+  let prev = null, pch = null;
+  for (let i = 0; i <= M; i++) {
+    const q = guideAt((i / M) * span);
+    const gT = [q.P[0] + q.m * q.v[0], q.P[1] + q.m * q.v[1]];
+    const gB = [q.P[0] - q.m * q.v[0], q.P[1] - q.m * q.v[1]];
+    if (prev) {
+      const ch = [gT[0] - prev.gT[0], gT[1] - prev.gT[1], gB[0] - prev.gB[0], gB[1] - prev.gB[1]];
+      let step = Math.max(Math.hypot(ch[0], ch[1]), Math.hypot(ch[2], ch[3])) + Math.abs(q.r - prev.r);
+      // Where the stroke TURNS at pen scale the envelope curves at pen scale
+      // too, so weight the turn by the pen radius — that is what packs the
+      // stations onto a bulge's flanks instead of spreading them evenly.
+      if (pch) {
+        const turn = (a2, b2) => {
+          const la = Math.hypot(a2[0], a2[1]), lb = Math.hypot(b2[0], b2[1]);
+          if (la < 1e-12 || lb < 1e-12) return 0;
+          return Math.atan2(Math.abs(a2[0] * b2[1] - a2[1] * b2[0]), a2[0] * b2[0] + a2[1] * b2[1]);
+        };
+        step += q.r * Math.max(turn([pch[0], pch[1]], [ch[0], ch[1]]), turn([pch[2], pch[3]], [ch[2], ch[3]]));
       }
-      for (let i = 0; i <= n; i++) { cs[i] = smC[i]; Rs[i] = smR[i]; }
+      pch = ch;
+      acc.push(acc[acc.length - 1] + Math.max(step, 1e-9));
     }
-    // Tangent-run touch points. When the circle size is changing, the tangent
-    // line tilts: the touch point sits at the normal rotated by β, where
-    // sin β = dR per unit of guide arc — the exact circle-to-circle tangent
-    // rather than the perpendicular-above-center approximation.
-    // Orientation: ONE fixed rotation of the tangent for the whole traversal,
-    // chosen where "away from the centerline" is unambiguous (the guide runs
-    // along the path there). A per-point test degenerates on radial stretches —
-    // a vertical shoulder's normal is axial, perpendicular to the radial
-    // reference — and flips on numerical noise.
-    let rotSign = 0;
-    for (let i = 0; i <= n && rotSign === 0; i++) {
-      const ip = Math.min(n, i + 1), im = Math.max(0, i - 1);
-      const tx = cs[ip][0] - cs[im][0], ty = cs[ip][1] - cs[im][1];
-      const dl = Math.hypot(tx, ty);
-      if (dl < 1e-12) continue;
-      const d = (-ty * (cs[i][0] - Ps[i][0]) + tx * (cs[i][1] - Ps[i][1])) / dl;
-      if (Math.abs(d) > 0.05) rotSign = d > 0 ? 1 : -1;
-    }
-    if (rotSign === 0) rotSign = 1;
-    // Resample the smoothed guide to uniform arc spacing before taking
-    // tangents: a wide averaging window can pile samples nearly on top of one
-    // another around a corner, and the finite-difference tangents there turn
-    // to noise the envelope inherits as hooks through the wall.
-    {
-      const a2 = [0];
-      for (let i = 1; i <= n; i++) a2.push(a2[i - 1] + Math.hypot(cs[i][0] - cs[i - 1][0], cs[i][1] - cs[i - 1][1]));
-      const t2 = a2[n];
-      if (t2 > 1e-9) {
-        const cu = [], ru = [];
-        let j = 0;
-        for (let i = 0; i <= n; i++) {
-          const d = (i / n) * t2;
-          while (j < n - 1 && a2[j + 1] < d) j++;
-          const f = (d - a2[j]) / ((a2[j + 1] - a2[j]) || 1e-12);
-          cu.push([lerp(cs[j][0], cs[j + 1][0], f), lerp(cs[j][1], cs[j + 1][1], f)]);
-          ru.push(lerp(Rs[j], Rs[j + 1], f));
-        }
-        for (let i = 0; i <= n; i++) { cs[i] = cu[i]; Rs[i] = ru[i]; }
-      }
-    }
-    const outer = [], bore = [];
-    let ptx = 1, pty = 0;
-    for (let i = 0; i <= n; i++) {
-      const ip = Math.min(n, i + 1), im = Math.max(0, i - 1);
-      let tx = cs[ip][0] - cs[im][0], ty = cs[ip][1] - cs[im][1];
-      const dl = Math.hypot(tx, ty);
-      if (dl > 1e-12) { tx /= dl; ty /= dl; ptx = tx; pty = ty; } else { tx = ptx; ty = pty; }
-      // A circle whose radius changes almost as fast as its center moves is
-      // (nearly) swallowed by its neighbour: it has no tangent point of its own
-      // on the union boundary, and forcing one (a hard-clamped tilt) throws a
-      // hook outside the band. Emit nothing there — the neighbours' points
-      // bridge across. Endpoints always emit (they anchor the section joins).
-      const dRad = Rs[ip] - Rs[im];
-      if (i > 0 && i < n && dl > 1e-12 && Math.abs(dRad) >= 0.9 * dl) continue;
-      const sinB = dl > 1e-12 ? clamp(dRad / dl, -0.9, 0.9) : 0;
-      const cosB = Math.sqrt(1 - sinB * sinB);
-      const nx = rotSign * -ty, ny = rotSign * tx;
-      const bx = -Rs[i] * sinB * tx, by = -Rs[i] * sinB * ty;
-      outer.push([cs[i][0] + Rs[i] * cosB * nx + bx, cs[i][1] + Rs[i] * cosB * ny + by]);
-      bore.push([cs[i][0] - Rs[i] * cosB * nx + bx, cs[i][1] - Rs[i] * cosB * ny + by]);
-    }
-    // Trim: a touch point swallowed by any other circle is not on the envelope
-    // of the union — dropping it (and chording across, at sub-sample scale) is
-    // what keeps a tight bend's wall from crossing itself. Endpoints stay.
-    // The eps shrink below keeps a point's own circle from swallowing it (its
-    // tangency distance is exactly R), so every point tests against every
-    // circle — no index pairing needed, which also lets the emit loop skip
-    // swallowed samples freely. First/last points anchor the section joins.
-    const trim = (pts) => {
-      const kept = [];
-      for (let k = 0; k < pts.length; k++) {
-        if (k > 0 && k < pts.length - 1) {
-          let inside = false;
-          for (let j = 0; j <= n && !inside; j++) {
-            const rj = Rs[j] - Math.max(1e-4, 0.002 * Rs[j]);
-            if (rj <= 0) continue;
-            const dx = pts[k][0] - cs[j][0], dy = pts[k][1] - cs[j][1];
-            if (dx * dx + dy * dy < rj * rj) inside = true;
-          }
-          if (inside) continue;
-        }
-        kept.push(pts[k]);
-      }
-      return kept;
+    prev = { gT, gB, r: q.r };
+  }
+  // Blur the per-cell weights over their neighbours before inverting: an
+  // abrupt density change would step the interpolation error from one station
+  // to the next, and that step is itself a (tiny) visible ripple.
+  {
+    const w = [];
+    for (let i = 1; i <= M; i++) w.push(acc[i] - acc[i - 1]);
+    const sw = w.map((x, i) => {
+      const l = w[Math.max(0, i - 1)], r2 = w[Math.min(M - 1, i + 1)];
+      return (l + 2 * x + r2) / 4;
+    });
+    for (let i = 1; i <= M; i++) acc[i] = acc[i - 1] + sw[i - 1];
+  }
+  const wMin = Math.max(transitionMinWall(tr), 0.1);
+  const n = clamp(Math.ceil(acc[M] / Math.min(ENV_STATION_STEP, ENV_STEP_WALLS * wMin)), 48, ENV_MAX_SAMPLES);
+  const S = [];
+  for (let i = 0, j = 0; i <= n; i++) {
+    const target = (i / n) * acc[M];
+    while (j < M - 1 && acc[j + 1] < target) j++;
+    const f = (target - acc[j]) / ((acc[j + 1] - acc[j]) || 1e-12);
+    const d = i === 0 ? 0 : i === n ? span : ((j + f) / M) * span;
+    const q = guideAt(d);
+    q.s = sBase + d;
+    S.push(q);
+  }
+
+  // Reach of the union along each station's cross-section ray. The wall's
+  // in-plane band at station i is read off the pen stroke directly: cast the
+  // ray from the centerline through the side guide (the same ray the revolve
+  // station spans) and take the farthest reach of any nearby pen circle along
+  // it for the outer surface, the nearest for the bore. That IS the envelope
+  // of the union — creases, shoulders and bulge cavities fall out of the
+  // max/min with no tangent bookkeeping, and a wall thinner than the pen is
+  // impossible by construction: every circle bounds its own ray's band.
+  //
+  // The scan is windowed to the LOCAL stretch of the stroke, for correctness
+  // before cost: on a deep bend the ray, extended far enough, pierces the far
+  // side of the arc too, and its circles must not be mistaken for this
+  // station's wall. Legitimate contributors sit within the pen radius of the
+  // ray (vertical shoulders reach along it by the midwall travel), while the
+  // far side of even the tightest legal bend is at least π·rMax of guide arc
+  // away (the solver holds R − m > r, so the concave guide circles the pivot
+  // no tighter than the pen): a window of 2·(midwall travel) + 2.5·rMax of
+  // per-side chord arc covers every contributor and can never reach around.
+  const sideArc = (G) => {
+    const a = [0];
+    for (let i = 1; i <= n; i++) a.push(a[i - 1] + Math.hypot(G[i][0] - G[i - 1][0], G[i][1] - G[i - 1][1]));
+    return a;
+  };
+  const GT = S.map((q) => [q.P[0] + q.m * q.v[0], q.P[1] + q.m * q.v[1]]);
+  const GB = S.map((q) => [q.P[0] - q.m * q.v[0], q.P[1] - q.m * q.v[1]]);
+  const aT = sideArc(GT), aB = sideArc(GB);
+  let mLo = Infinity, mHi = -Infinity, rMax = 0;
+  for (const q of S) { mLo = Math.min(mLo, q.m); mHi = Math.max(mHi, q.m); rMax = Math.max(rMax, q.r); }
+  const wWin = 2 * (mHi - mLo) + 2.5 * rMax;
+
+  // A max over the SAMPLED circles alone under-reaches the smooth envelope
+  // between samples by a hair that oscillates with the sample phase — a
+  // scallop the shading picks up — so the scan works interval-by-interval on
+  // the linearly interpolated family: center and radius vary linearly over
+  // [j, j+1], and the extremum of h(t) ± √(r(t)² − u(t)²) has a closed form
+  // (the stationary condition squares to a quadratic in t). Exact to the
+  // interpolation, so the only error left is the family's own curvature
+  // between samples — far below anything visible.
+  const ivalExt = (u0, h0, r0, u1, h1, r1, mode) => {
+    // mode +1: max of h+s over t∈[0,1]; mode −1: min of h−s. s = √(r²−u²).
+    const du = u1 - u0, dh = h1 - h0, dr = r1 - r0;
+    const p0 = r0 * r0 - u0 * u0, p1 = r0 * dr - u0 * du, p2 = dr * dr - du * du;
+    const g = (t) => {
+      const q1 = p0 + 2 * p1 * t + p2 * t * t;
+      return q1 > 0 ? (h0 + dh * t) + mode * Math.sqrt(q1) : undefined;
     };
-    return { outer: trim(outer), bore: trim(bore) };
+    let best; // running extremum (max for +1, min for −1)
+    const take = (val) => {
+      if (val === undefined) return;
+      if (best === undefined || (mode > 0 ? val > best : val < best)) best = val;
+    };
+    take(g(0)); take(g(1));
+    const A = (dh * dh - p2) * p2, B = 2 * p1 * (dh * dh - p2), C = dh * dh * p0 - p1 * p1;
+    if (Math.abs(A) > 1e-12) {
+      const disc = B * B - 4 * A * C;
+      if (disc >= 0) {
+        const sq = Math.sqrt(disc);
+        for (const t of [(-B + sq) / (2 * A), (-B - sq) / (2 * A)]) {
+          if (t > 0 && t < 1) take(g(t));
+        }
+      }
+    } else if (Math.abs(B) > 1e-12) {
+      const t = -C / B;
+      if (t > 0 && t < 1) take(g(t));
+    }
+    return best;
   };
 
-  const top = side(1), bot = side(-1);
-  const resample = (pts, k) => {
-    const acc = [0];
-    for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
-    const total = acc[acc.length - 1];
-    if (total < 1e-12) return new Array(k).fill(pts[0]);
-    const out = [];
-    let j = 0;
-    for (let i = 0; i < k; i++) {
-      const d = (i / (k - 1)) * total;
-      while (j < pts.length - 2 && acc[j + 1] < d) j++;
-      const f = (d - acc[j]) / ((acc[j + 1] - acc[j]) || 1e-12);
-      out.push([lerp(pts[j][0], pts[j + 1][0], f), lerp(pts[j][1], pts[j + 1][1], f)]);
+  // Reach reads the CONNECTED run of material along the ray, not the global
+  // union: on a deep bend the ray pierces the bend's other leg too, and at a
+  // razor radius that leg sits closer than the local wall is tall — its
+  // circles must extend this station's band only if their material actually
+  // touches it. Start from the station's own circle and absorb every circle
+  // whose along-ray interval overlaps the run; a gap of even a micron keeps
+  // the legs apart, while true contact (a fold, a bulge cavity closing)
+  // legitimately merges.
+  const reach = (G, dirSign, i, jFrom, jTo) => {
+    const P = S[i].P, T = S[i].T, v = S[i].v;
+    const kN = jTo - jFrom + 1;
+    const us = new Float64Array(kN), hs = new Float64Array(kN), ws = new Float64Array(kN);
+    for (let j = jFrom; j <= jTo; j++) {
+      const dx = G[j][0] - P[0], dy = G[j][1] - P[1];
+      const u = dx * T[0] + dy * T[1];
+      const rj = S[j].r;
+      const k = j - jFrom;
+      us[k] = u;
+      hs[k] = (dx * v[0] + dy * v[1]) * dirSign;
+      ws[k] = u > -rj && u < rj ? Math.sqrt(rj * rj - u * u) : NaN;
     }
-    return out;
+    let lo = S[i].m - S[i].r, hi = S[i].m + S[i].r;
+    const inRun = new Uint8Array(kN);
+    inRun[i - jFrom] = 1;
+    for (let pass = 0; pass < 6; pass++) {
+      let grew = false;
+      for (let k = 0; k < kN; k++) {
+        if (inRun[k] || ws[k] !== ws[k]) continue;               // absorbed or missing the ray
+        if (hs[k] - ws[k] <= hi + 1e-9 && hs[k] + ws[k] >= lo - 1e-9) {
+          inRun[k] = 1;
+          if (hs[k] + ws[k] > hi) { hi = hs[k] + ws[k]; grew = true; }
+          if (hs[k] - ws[k] < lo) { lo = hs[k] - ws[k]; grew = true; }
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+    // Circles left over pierce this ray yet never joined the wall's run:
+    // material hovering past the surface with air in between. When it comes
+    // from the SAME stretch of wall — within a couple of pen radii of
+    // centerline abscissa, i.e. a steep shoulder's corner folding over — the
+    // station model cannot hold the overhang, so the pocket is filled: union
+    // it in, and the wall comes out thicker with a crease, never thinner.
+    // Material from farther along the centerline is the bend's own far half
+    // (a razor's legs legitimately hover a hair apart across the pivot) and
+    // must stay separate.
+    for (let pass = 0; pass < 4; pass++) {
+      let grew = false;
+      for (let k = 0; k < kN; k++) {
+        if (inRun[k] || ws[k] !== ws[k]) continue;
+        if (Math.abs(S[jFrom + k].s - S[i].s) > 2 * rMax) continue;
+        inRun[k] = 1;
+        if (hs[k] + ws[k] > hi) { hi = hs[k] + ws[k]; grew = true; }
+        if (hs[k] - ws[k] < lo) { lo = hs[k] - ws[k]; grew = true; }
+      }
+      if (!grew) break;
+      // absorbing a pocket can bridge to further circles — resume the plain
+      // component expansion with the widened run
+      for (let k = 0; k < kN; k++) {
+        if (inRun[k] || ws[k] !== ws[k]) continue;
+        if (hs[k] - ws[k] <= hi + 1e-9 && hs[k] + ws[k] >= lo - 1e-9) {
+          inRun[k] = 1;
+          if (hs[k] + ws[k] > hi) hi = hs[k] + ws[k];
+          if (hs[k] - ws[k] < lo) lo = hs[k] - ws[k];
+        }
+      }
+    }
+    // Polish the run's ends on the interpolated family, pairs inside the run
+    // only — a pair straddling the run's edge would bridge the very gap the
+    // component test just kept open. Most pairs provably can't move either
+    // extremum (h is linear, the radius is bounded by the larger endpoint,
+    // |u| by the smaller when it doesn't change sign), so they skip the
+    // closed-form solve outright.
+    for (let k = 1; k < kN; k++) {
+      if (!inRun[k - 1] || !inRun[k]) continue;
+      const r0 = S[jFrom + k - 1].r, r1 = S[jFrom + k].r;
+      const rM = r0 > r1 ? r0 : r1;
+      const um = (us[k - 1] > 0) === (us[k] > 0) ? Math.min(Math.abs(us[k - 1]), Math.abs(us[k])) : 0;
+      const wB = rM > um ? Math.sqrt(rM * rM - um * um) : 0;
+      const hMax = hs[k - 1] > hs[k] ? hs[k - 1] : hs[k];
+      const hMin = hs[k - 1] < hs[k] ? hs[k - 1] : hs[k];
+      if (hMax + wB > hi) {
+        const mx = ivalExt(us[k - 1], hs[k - 1], r0, us[k], hs[k], r1, 1);
+        if (mx !== undefined && mx > hi) hi = mx;
+      }
+      if (hMin - wB < lo) {
+        const mn = ivalExt(us[k - 1], hs[k - 1], r0, us[k], hs[k], r1, -1);
+        if (mn !== undefined && mn < lo) lo = mn;
+      }
+    }
+    return { hi, lo };
   };
-  const chainLen = (pts) => { let L = 0; for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return L; };
-  const NS = clamp(Math.ceil(Math.max(chainLen(top.outer), chainLen(bot.outer)) / ENV_STATION_STEP) + 1, 24, 400);
-  const pair = (a, b) => {
-    const A2 = resample(a, NS), B2 = resample(b, NS), st = [];
-    for (let i = 0; i < NS; i++) {
-      const C = [(A2[i][0] + B2[i][0]) / 2, (A2[i][1] + B2[i][1]) / 2];
-      const vx = A2[i][0] - C[0], vy = A2[i][1] - C[1];
+
+  // Pair the two rays of each sample — the SAME cross-section — into revolve
+  // stations. Each station keeps its honest centerline abscissa, which is what
+  // the splice (zoneAt) and the schematic measure against. The end stations
+  // are written from the section profile directly: the zone must hand the
+  // splice (sameRing) exactly the ring the neighbouring section starts with.
+  const stOuter = [], stInner = [];
+  let t0 = 0, t1 = 0, b0 = 0, b1 = 0;   // two-pointer window bounds per side
+  for (let i = 0; i <= n; i++) {
+    const P = S[i].P, v = S[i].v;
+    while (t0 < n && aT[t0] < aT[i] - wWin) t0++;
+    while (t1 < n && aT[t1 + 1] <= aT[i] + wWin) t1++;
+    while (b0 < n && aB[b0] < aB[i] - wWin) b0++;
+    while (b1 < n && aB[b1 + 1] <= aB[i] + wWin) b1++;
+    let oT, oB, bT, bB;
+    if (i === 0 || i === n) {
+      oT = oB = S[i].m + S[i].r;
+      bT = bB = S[i].m - S[i].r;
+    } else {
+      const rT = reach(GT, 1, i, t0, Math.max(t1, i)), rB = reach(GB, -1, i, b0, Math.max(b1, i));
+      oT = rT.hi; oB = rB.hi; bT = rT.lo; bB = rB.lo;
+    }
+    const mkSt = (hT, hB) => {
+      const pT = [P[0] + hT * v[0], P[1] + hT * v[1]];
+      const pB = [P[0] - hB * v[0], P[1] - hB * v[1]];
+      const C = [(pT[0] + pB[0]) / 2, (pT[1] + pB[1]) / 2];
+      const vx = pT[0] - C[0], vy = pT[1] - C[1];
       const r = Math.hypot(vx, vy);
-      const v = r > 1e-12 ? [vx / r, vy / r] : [0, 1];
-      st.push({ s: seg.sStart - leadA + (i / (NS - 1)) * span, r: Math.max(r, 1e-4), C, v });
-    }
-    return st;
-  };
-  return { outer: pair(top.outer, bot.outer), inner: pair(top.bore, bot.bore) };
+      return { s: S[i].s, r: Math.max(r, 1e-4), C, v: r > 1e-12 ? [vx / r, vy / r] : [0, 1] };
+    };
+    stOuter.push(mkSt(oT, oB));
+    stInner.push(mkSt(bT, bB));
+  }
+  return { outer: stOuter, inner: stInner };
 }
 
 

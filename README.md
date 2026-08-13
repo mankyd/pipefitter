@@ -15,7 +15,7 @@ minute rather than a full CAD session.
 ## What it can do
 
 - **Any number of sections** — from a single straight run upward — each with its own
-  inner diameter, wall thickness, and length, joined by planar bends of up to 90 degrees.
+  inner diameter, wall thickness, and length, joined by planar bends of up to 180 degrees.
 - **End treatments** on each pipe's two open ends: plain, chamfer, flange (with bolt
   holes), hose barb, teeth, and a slip joint for sliding two pipes together. A lone
   section carries both of them, one per side.

@@ -992,14 +992,22 @@ function groupModel(chain) {
     // the first or last pipe. (With a single pipe it is both, so it offers both
     // directions.) Removing is likewise an end-of-chain operation, so no joint
     // ever has to be dissolved and re-made in the middle.
+    // Joining a pipe to the near end (↑) stays in the header, next to that end.
+    // Joining one to the far end (↓) reads better as a footer below the pipe's
+    // last section - the place along the chain where the new pipe attaches.
     const pipeActs = [];
-    if (lastPipe && !atCap) pipeActs.push({ label: '+ Pipe ↓', title: 'Join a new pipe to this pipe\'s far end', onClick: () => addPipe('after') });
-    if (firstPipe && !atCap) pipeActs.push({ label: '+ Pipe ↑', title: 'Join a new pipe to this pipe\'s near end', onClick: () => addPipe('before') });
+    // The arrow (↑/↓ stacked, ←/→ when the panel is docked in a row below the
+    // viewer) is supplied by CSS off the button class, so it can flip on resize
+    // without a panel rebuild - see the pipe-join / pipe-foot-add rules.
+    if (firstPipe && !atCap) pipeActs.push({ label: '+ Pipe', title: 'Join a new pipe to this pipe\'s near end', cls: 'pipe-join', onClick: () => addPipe('before') });
+    const pipeFoot = (lastPipe && !atCap)
+      ? [{ label: '+ Pipe', title: 'Join a new pipe to this pipe\'s far end', onClick: () => addPipe('after') }] : null;
     groups.push({
       id: gid(pi), kind: 'pipe', index: pi,
       tag: 'P' + (pi + 1), title: 'Pipe ' + (pi + 1),
       pipeHead: true,
       actions: pipeActs,
+      footer: pipeFoot,
       onRemove: ((firstPipe || lastPipe) && nPipes > 1) ? () => removePipe(pi) : null,
       removeTitle: 'Remove this pipe',
       controls: [],
@@ -1323,6 +1331,9 @@ function groupHead(g, node, cls) {
   const title = h('span', 'group-title'); title.textContent = g.title;
   toggle.append(caret, tag, title);
   toggle.addEventListener('click', () => {
+    // A whole pipe stays open in the docked layout (see applyLayout); the CSS
+    // neutralizes the toggle, and this guards the keyboard path too.
+    if (g.pipeHead && effectiveLayout() === 'bottom') return;
     const nowCollapsed = !collapsedGroups.has(g.id);
     if (nowCollapsed) collapsedGroups.add(g.id); else collapsedGroups.delete(g.id);
     node.classList.toggle('collapsed', nowCollapsed);
@@ -1336,7 +1347,7 @@ function groupHead(g, node, cls) {
     head.append(btn);
   }
   for (const act of (g.actions || [])) {
-    const btn = h('button', 'btn btn-secondary group-mirror', { type: 'button', title: act.title || '' });
+    const btn = h('button', 'btn btn-secondary group-mirror' + (act.cls ? ' ' + act.cls : ''), { type: 'button', title: act.title || '' });
     btn.textContent = act.label;
     btn.addEventListener('click', act.onClick);
     head.append(btn);
@@ -1348,6 +1359,19 @@ function groupHead(g, node, cls) {
     head.append(btn);
   }
   return head;
+}
+
+// The row of join actions sitting below a pipe's last section - currently just
+// "+ Pipe ↓", the far-end join that used to live in the header.
+function pipeFoot(acts) {
+  const foot = h('div', 'pipe-foot');
+  for (const act of acts) {
+    const btn = h('button', 'btn btn-secondary pipe-foot-add', { type: 'button', title: act.title || '' });
+    btn.textContent = act.label;
+    btn.addEventListener('click', act.onClick);
+    foot.append(btn);
+  }
+  return foot;
 }
 
 function buildPanel(groups) {
@@ -1364,8 +1388,17 @@ function buildPanel(groups) {
   // Each pipe's cards live inside its own block, so its header can fold the
   // whole pipe away. Groups arrive in order, headed by their pipe.
   let host = el.panelGrid;
+  // A pipe's footer (the "+ Pipe ↓" join) sits below its last section, so it
+  // can't be appended until the block's cards are all in. Hold it until the
+  // next pipe starts, then flush; the loop's tail flush covers the last pipe.
+  let pendingFooter = null;
+  const flushFooter = () => {
+    if (pendingFooter && host !== el.panelGrid) host.append(pipeFoot(pendingFooter));
+    pendingFooter = null;
+  };
   for (const g of groups) {
     if (g.pipeHead) {
+      flushFooter();
       host = h('div', 'pipe-block', { 'data-group-id': g.id });
       if (collapsedGroups.has(g.id)) host.classList.add('collapsed');
       // Hovering the header bands the whole pipe in the schematic - the same
@@ -1380,6 +1413,7 @@ function buildPanel(groups) {
       head.addEventListener('mouseleave', () => { if (hoveredSection === seg) { hoveredSection = null; drawSchematic(); } });
       host.append(head);
       el.panelGrid.append(host);
+      pendingFooter = g.footer;
       continue;
     }
     const section = h('section', 'group', { 'data-group-id': g.id });
@@ -1501,6 +1535,7 @@ function buildPanel(groups) {
     section.append(body);
     host.append(section);
   }
+  flushFooter();   // the last pipe has no following header to trigger its flush
 }
 
 function updatePanelValues(groups) {
@@ -1584,6 +1619,10 @@ function applyLayout() {
   // Minimize the docked cross-section diagram on the same breakpoint (CSS keys
   // the collapse off this class, so the two always happen together).
   el.viewer.classList.toggle('panel-below', lay === 'bottom');
+  // In the docked (bottom) layout a whole pipe can't be folded away - only its
+  // sections and bends stay collapsible. The panel is a sibling of the viewer,
+  // so it carries its own class for the pipe-header CSS to key off.
+  el.panel.classList.toggle('is-below', lay === 'bottom');
   // The side-swap arrow points at the side it would move the panel to, and sits
   // on that side of the toolbar - so it always reads as "push the panel that
   // way", and never sits between the two buttons it shares the bar with. (In

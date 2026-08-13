@@ -245,20 +245,56 @@ input[type=range]:focus-visible::-webkit-slider-thumb {
   color: var(--color-neutral-500);
 }
 .panel-toolbar .panel-side:hover { color: var(--color-text); }
-.panel-grid { display: grid; gap: var(--space-8); padding: var(--space-2); }
+/* Extra top padding clears the "+ Pipe ↑" button, which straddles the first
+   block's top border and pokes up out of the grid. */
+.panel-grid { display: grid; gap: var(--space-8); padding: var(--space-6) var(--space-2) var(--space-2); }
 
 /* One pipe's cards, boxed together with the header that folds the whole part
    away - so a chain reads as separate parts rather than one long list. */
 .pipe-block {
+  position: relative;
   display: flex; flex-direction: column; gap: var(--space-8); min-width: 0;
   padding: var(--space-4) var(--space-3) var(--space-6);
   border: 1px solid var(--color-neutral-800); border-radius: var(--radius-md);
 }
+/* The two "+ Pipe" joins straddle the block's edge - near-end on the top border,
+   far-end on the bottom - so they read as attaching to the pipe box. An opaque
+   fill (matching the panel) masks the border line running behind them. */
+.pipe-join, .pipe-foot {
+  position: absolute; right: var(--space-3); z-index: 1;
+}
+.pipe-join { top: 0; transform: translateY(-50%); }
+.pipe-foot { bottom: 0; transform: translateY(50%); }
+.pipe-join, .pipe-foot-add { background: var(--color-panel); }
+.pipe-join:hover, .pipe-foot-add:hover { background: color-mix(in srgb, var(--color-text) 7%, var(--color-panel)); }
+.pipe-join:active, .pipe-foot-add:active { background: color-mix(in srgb, var(--color-text) 14%, var(--color-panel)); }
+/* The join arrow lives here, not in the label, so it can flip between layouts
+   without rebuilding the panel: stacked ↑/↓ beside the viewer, ←/→ when the
+   panel is docked below in a left-to-right row of pipes. */
+.pipe-join::after { content: '↑'; }
+.pipe-foot-add::after { content: '↓'; }
+.pnl.is-below .pipe-join::after { content: '←'; }
+.pnl.is-below .pipe-foot-add::after { content: '→'; }
+/* Docked, "add before" attaches to the left end of the row, so it moves to the
+   left of the box. */
+.pnl.is-below .pipe-join { left: var(--space-3); right: auto; }
 .pipe-block.collapsed > .group { display: none; }
 /* Folded away, the box hugs its header instead of leaving the body's gap. */
 .pipe-block.collapsed { padding-bottom: var(--space-4); }
 .pipe-block.collapsed .pipe-head .group-caret { transform: rotate(-90deg); }
+/* Join-a-pipe row below the last section. It rides the block's bottom border
+   (like the "+ Pipe" join on the top border), so it stays put when the pipe is
+   folded down to its header rather than folding away with the body. */
+.pipe-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+.pipe-foot-add { padding: 3px 10px; font-size: 11px; border-radius: var(--radius-sm); }
 .pipe-head { padding-bottom: 0; }
+/* Docked below the viewer (narrow/mobile), a whole pipe can't be folded away -
+   only its sections and bends collapse. Drop the header's caret, disable its
+   toggle, and force open any pipe that was folded in a side layout. */
+.pnl.is-below .pipe-head .group-caret { display: none; }
+.pnl.is-below .pipe-head .group-toggle { pointer-events: none; }
+.pnl.is-below .pipe-block.collapsed > .group { display: flex; }
+.pnl.is-below .pipe-block.collapsed { padding-bottom: var(--space-6); }
 .pipe-head .group-title { font-size: 14px; color: var(--color-neutral-200); }
 .pipe-head .group-rule { background: linear-gradient(90deg, var(--color-neutral-700), transparent); }
 

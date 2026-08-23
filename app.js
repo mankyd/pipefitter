@@ -97,11 +97,11 @@ let cachedSig = '';   // parameter signature the cache was built for
 
 // three.js handles, initialized in initThree()
 const VIEW_HOME = { az: -0.7, pol: 1.30 };   // default orbit angles (az ≈ −40°, from the left; camera elevation ≈ 16°)
-// Auto-frame distance = span · FRAME_K · fitK (lower = tighter). Tuned against
-// the worst case for a part measured by its longest axis: a 90° elbow, whose
-// two equal legs put the diagonal well outside `span`. That one still clears
-// the canvas edges and the schematic card here, so anything flatter does too.
-const FRAME_K = 1.45;
+// Breathing room left around the part when auto-framing: the camera backs off
+// until the part's on-screen box is this much smaller than the region it has to
+// fit in (higher = looser). The fit itself is exact — see frameFor — so this is
+// margin, not slack for a miscalculation.
+const FRAME_PAD = 1.25;
 let renderer, scene, camera, meshGroup, material, grid, hemiLight;
 // One mesh per pipe, all sharing `material` and parented to meshGroup. Separate
 // objects rather than one merged buffer: the parts are separate in the world
@@ -115,10 +115,16 @@ const meshes = [];
 const jointRings = [];
 let jointRingMat = null;
 let gridStep = 10, gridCells = 20;   // current floor-grid spacing, so a theme change can rebuild it
+let gridPlaneHalf = 0;               // how far the grid's quad reaches from the origin, mm
 let orbit = null;
-let fitK = 1;
+let fitW = 1, fitH = 1;   // fractions of the canvas the part has to fit inside
 let span = 0;
+let bboxSize = [0, 0, 0];   // the part's bounding box, mm, as it sits in the scene
+let fitAt = '';             // the inputs the camera was last auto-framed for - see fitSig
+let meshOffset = null;      // what the last build subtracted to centre the assembly
 let framed = false;
+let animateReframe = false;   // the next re-frame is a structural edit: move to it, don't cut
+let addedFocus = null;        // [{pi, si}] the edit just created - what has to be brought into view
 let userView = false; // once true, auto-framing is disabled
 let swapped = false;  // true when the diagram is expanded and the 3D view is a thumbnail
 let gridKey = '';
@@ -320,6 +326,7 @@ function readView() {
   return { az: v[0], pol: v[1], dist: v[2], tx: v[3], ty: v[4], tz: v[5] };
 }
 function applyView(v) {
+  cancelViewTween();
   orbit.az = v.az;
   orbit.pol = clampPol(v.pol);
   orbit.dist = clampDist(v.dist);
@@ -525,6 +532,7 @@ function structuralEdit(pi, mutate, driver) {
   for (const s of pp.sections) for (const slot of geo.END_SLOTS) delete s[slot];
   pp.sections[0].endA = endA || geo.defaultEnd();
   pp.sections[pp.sections.length - 1].endB = endB || geo.defaultEnd();
+  animateReframe = true;
   commit(geo.normalizeChain(p, driver), null);
 }
 // A straight (0°) transition bend whose diameter/wall match a section.
@@ -542,6 +550,7 @@ function bendFrom(sec) {
 // treatment, and the old one becomes interior.
 // A collapsed source section spawns its new section and bend collapsed too.
 function addSectionBefore(pi, i) {
+  addedFocus = [{ pi, si: i }];                      // the copy lands at i, shifting the old one up
   const collapse = collapsedGroups.has(gid(pi, 's', i));
   shiftCollapsed(pi, 's', i, 1);                     // section i and everything after it move up one
   shiftCollapsed(pi, 'b', i, 1);                     // (prepend inserts a bend at i as well)
@@ -557,6 +566,7 @@ function addSectionBefore(pi, i) {
 function addSectionAfter(pi, i) {
   // i is the last section, so the new section (i+1) and new bend (i) sit at the
   // end and nothing existing is renumbered.
+  addedFocus = [{ pi, si: i + 1 }];
   const collapse = collapsedGroups.has(gid(pi, 's', i));
   if (collapse) { collapsedGroups.add(gid(pi, 's', i + 1)); collapsedGroups.add(gid(pi, 'b', i)); }
   structuralEdit(pi, (p) => {
@@ -611,6 +621,8 @@ function addPipe(where) {
   const carried = { ...src[slot] };
   const dims = (s) => ({ id: src.id, w: src.w, l: src.l, [s]: s === slot ? carried : geo.defaultEnd() });
   const np = { sections: [dims('endA'), dims('endB')], bends: [bendFrom(src)] };
+  const newPi = after ? pipes.length : 0;            // where the stub lands once it's spliced in
+  addedFocus = np.sections.map((_, si) => ({ pi: newPi, si }));
   const p = geo.cloneParams(state.params);
   if (after) {
     p.pipes.push(np);
@@ -626,6 +638,7 @@ function addPipe(where) {
   // The pipe that was already there owns the joint either way: appending flows
   // left to right by default, prepending has to be told (the existing pipe is
   // now pipe 1, and its FIRST end is the one that was clicked).
+  animateReframe = true;
   commit(geo.normalizeChain(p, after ? null : { pi: 1, si: 0 }), null);
 }
 function removePipe(j) {
@@ -639,6 +652,7 @@ function removePipe(j) {
   shiftCollapsedPipes(j + 1, -1);
   hiddenPipes.delete(j);
   shiftHiddenPipes(j + 1, -1);
+  animateReframe = true;
   commit(geo.normalizeChain(p), null);
 }
 
@@ -2047,10 +2061,10 @@ function applyRenderStyle(name) {
 // axis lines through the origin.
 const GRID_LINE_PX = 1.6, GRID_AXIS_PX = 2.6;
 
-// Floor-grid spacing. The camera frames the part to a constant fraction of the
-// canvas (orbit.dist = span · FRAME_K · fitK), so holding the grid to a fixed
-// number of squares across the part is what keeps its on-screen density steady
-// whatever size the part is.
+// Floor-grid spacing. The camera frames the part to a roughly constant fraction
+// of the canvas (see frameFor), so holding the grid to a fixed number of squares
+// across the part is what keeps its on-screen density steady whatever size the
+// part is.
 //
 // The spacing still has to be a round number to be worth reading, so the ideal
 // span/TARGET is snapped to a 1-2-5 rung. That snap is chosen on a LOG scale:
@@ -2060,19 +2074,22 @@ const GRID_LINE_PX = 1.6, GRID_AXIS_PX = 2.6;
 // near one then flips between two densities under a change far too small to
 // warrant it.
 //
-// Even correctly placed, a boundary is a 2x jump. HYSTERESIS keeps the rung
-// currently in use until the ideal drifts clear of it by more than the snap
-// alone would need, so nudging a bend angle can't halve the grid underfoot;
-// crossing has to be deliberate. The grid is view furniture - it isn't
-// exported, serialized, or part of the model - so letting it depend a little
-// on where it came from costs nothing that matters.
+// Which rung is in use is a function of the span and nothing else - it does not
+// depend on the rung the grid happens to be showing. This used to carry
+// hysteresis, holding the current rung until the ideal drifted well clear of
+// it, on the grounds that a boundary was a 2x jump and nudging a bend angle
+// shouldn't halve the grid underfoot. But hysteresis moves the boundary
+// depending on which way you approach it: the same part would be ruled two
+// different ways, one on the way up and one on the way back down, and a value
+// you had just walked past would not restore the grid you had just left. What
+// it was guarding against - the jump - is now a half-second crossfade that
+// holds the shared lines steady (see tweenGridFrom), so the trade no longer
+// pays. One boundary, in the same place from either side.
 const GRID_TARGET = 12;                              // squares across the part
 const GRID_NICE = [1, 2, 5, 10, 20, 50, 100, 200, 500];
-const GRID_STICK = Math.log(1.6);                    // how far the ideal may drift before re-snapping
 function gridStepFor(span) {
   const ideal = Math.max(span, 1e-6) / GRID_TARGET;
   const off = (n) => Math.abs(Math.log(n / ideal));
-  if (gridStep && off(gridStep) < GRID_STICK) return gridStep;
   let best = GRID_NICE[0];
   for (const n of GRID_NICE) if (off(n) < off(best)) best = n;
   return best;
@@ -2087,8 +2104,29 @@ function gridStepFor(span) {
 // `linewidth` says - too fine to read, and finer still on a HiDPI screen where
 // that's half a CSS pixel. Deriving each line's coverage from screen-space
 // derivatives instead gives it a width we can actually choose.
+// The quad the grid shader runs on. It has no ruling of its own - it only has
+// to reach far enough to cover the square the shader draws, which is why it can
+// be re-cut without disturbing anything: the material, its uniforms, and any
+// fade writing to them all survive.
+function gridPlane(half) {
+  const geom = new THREE.PlaneGeometry(half * 2, half * 2);
+  geom.rotateX(-Math.PI / 2);
+  gridPlaneHalf = half;
+  return geom;
+}
+
+// Give the plane room to reach `need` mm from the origin. Grown with headroom
+// and only shrunk when it has become mostly surplus, so a drag doesn't re-cut
+// it on every tick.
+function reachGrid(need) {
+  if (!grid || (gridPlaneHalf >= need && gridPlaneHalf <= need * 4)) return;
+  grid.geometry.dispose();
+  grid.geometry = gridPlane(need * 1.5);
+}
+
 function makeGrid(step, cells) {
   const th = SCENE_THEME[state.theme] || SCENE_THEME.dark;
+  cancelGridAnim();   // the uniforms it is writing to are about to be disposed
   if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
   // The square is centred on the origin and the lines fall on whole multiples
   // of `step` from it, so an odd cell count puts the outer edge half a cell
@@ -2096,15 +2134,19 @@ function makeGrid(step, cells) {
   cells += cells % 2;
   gridStep = step; gridCells = cells;
   const dpr = renderer ? renderer.getPixelRatio() : 1;
-  // Half a cell of bleed past the grid square, so the shader can draw the
-  // outermost lines at their full width instead of clipping them down
-  // the middle.
-  const geom = new THREE.PlaneGeometry(step * cells + step, step * cells + step);
-  geom.rotateX(-Math.PI / 2);
+  // Half a cell of bleed past the square, so the shader can draw the outermost
+  // lines at their full width instead of clipping them down the middle.
+  const geom = gridPlane((step * cells) / 2 + step * 0.5);
   grid = new THREE.Mesh(geom, new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
     uniforms: {
+      // Two lattices and the one they share, crossfaded by uMix - see the
+      // fragment shader and tweenGridFrom. At rest all three are the same
+      // spacing and uMix is spent, which collapses to a single plain grid.
       uStep: { value: step },
+      uStep2: { value: step },
+      uShare: { value: step },
+      uMix: { value: 1 },
       uHalf: { value: (step * cells) / 2 },
       uMinor: { value: new THREE.Color(th.grid[1]) },
       uAxis: { value: new THREE.Color(th.grid[0]) },
@@ -2121,7 +2163,7 @@ function makeGrid(step, cells) {
       }`,
     fragmentShader: `
       uniform vec3 uMinor, uAxis;
-      uniform float uStep, uHalf, uMinorPx, uAxisPx, uOpacity;
+      uniform float uStep, uStep2, uShare, uMix, uHalf, uMinorPx, uAxisPx, uOpacity;
       varying vec2 vXZ;
 
       // Coverage of a line \`px\` device pixels wide, \`d\` from its centre, where
@@ -2139,11 +2181,21 @@ function makeGrid(step, cells) {
         return 1.0 - smoothstep(lim - 0.5 * fw, lim + 0.5 * fw, abs(v));
       }
 
+      // Coverage of the minor lines of one lattice, sp mm apart, cut to the grid
+      // square by the four bounds worked out in main(). (Not named step: that
+      // is a built-in this shader calls further down.)
+      float lattice(float sp, vec2 wfw, float inX, float inZ, float endX, float endZ) {
+        vec2 cfw = wfw / sp;                       // how far a pixel advances, in cells
+        vec2 d = abs(fract(vXZ / sp - 0.5) - 0.5); // distance to the nearest line, in cells
+        float m = max(lineCoverage(d.x, cfw.x, uMinorPx) * inZ * endX,
+                      lineCoverage(d.y, cfw.y, uMinorPx) * inX * endZ);
+        // Once cells are only a few pixels apart the lines merge into a solid
+        // sheet - dissolve them rather than let them alias into moire.
+        return m * (1.0 - smoothstep(0.16, 0.5, max(cfw.x, cfw.y)));
+      }
+
       void main() {
         vec2 wfw = fwidth(vXZ);
-        vec2 c = vXZ / uStep;          // position in cells, so lines sit on integers
-        vec2 cfw = fwidth(c);
-        vec2 d = abs(fract(c - 0.5) - 0.5);
 
         // Each family of lines is bounded by the extent it runs along, not by a
         // shared box: lines of constant x run along z, so they stop at the z
@@ -2154,11 +2206,31 @@ function makeGrid(step, cells) {
         float inX = within(vXZ.x, uHalf + tol * wfw.x, wfw.x);
         float inZ = within(vXZ.y, uHalf + tol * wfw.y, wfw.y);
 
-        float minor = max(lineCoverage(d.x, cfw.x, uMinorPx) * inZ,
-                          lineCoverage(d.y, cfw.y, uMinorPx) * inX);
-        // Once cells are only a few pixels apart the lines merge into a solid
-        // sheet - dissolve them rather than let them alias into moire.
-        minor *= 1.0 - smoothstep(0.16, 0.5, max(cfw.x, cfw.y));
+        // And bounded across their run too - where each family simply runs out
+        // of lines. The plane used to do this by ending there, but it is now
+        // built wider than the grid so the grid can be animated out to a larger
+        // size, and without this the families stream on across the surplus. The
+        // cut goes half a cell out, where the plane's edge was: pulling it in to
+        // the outermost line's own edge (uHalf + tol) would fade away that
+        // line's outer half along with everything past it.
+        float wide = max(uStep, uStep2) * 0.5;
+        float endX = within(vXZ.x, uHalf + wide, wfw.x);
+        float endZ = within(vXZ.y, uHalf + wide, wfw.y);
+
+        // A change of spacing is a crossfade between two lattices, not a slide
+        // from one to the other: every line stays where it belongs and only its
+        // strength moves. The lines the two lattices share (multiples of
+        // uShare) are held at full strength throughout, so coarsening reads as
+        // every other line dropping out and refining as new lines appearing
+        // between ones that never moved.
+        float minor;
+        if (uStep == uStep2) {
+          minor = lattice(uStep, wfw, inX, inZ, endX, endZ);
+        } else {
+          minor = max(lattice(uShare, wfw, inX, inZ, endX, endZ),
+                  max(lattice(uStep,  wfw, inX, inZ, endX, endZ) * (1.0 - uMix),
+                      lattice(uStep2, wfw, inX, inZ, endX, endZ) * uMix));
+        }
 
         float axis = max(lineCoverage(abs(vXZ.x), wfw.x, uAxisPx) * inZ,
                          lineCoverage(abs(vXZ.y), wfw.y, uAxisPx) * inX);
@@ -2260,6 +2332,10 @@ function syncMesh(first) {
   const cx = (g.bbox.min[0] + g.bbox.max[0]) / 2;
   const cz = (g.bbox.min[2] + g.bbox.max[2]) / 2;
   const my = g.bbox.min[1];
+  // How far the centring moved since the last build. Everything that survives
+  // this rebuild is about to be drawn that much away from where it was.
+  const shift = meshOffset && new THREE.Vector3(cx - meshOffset[0], my - meshOffset[1], cz - meshOffset[2]);
+  meshOffset = [cx, my, cz];
   while (meshes.length > g.pipes.length) {
     const m = meshes.pop();
     meshGroup.remove(m);
@@ -2279,19 +2355,142 @@ function syncMesh(first) {
   syncJointRings(g, cx, my, cz);
 
   span = Math.max(g.bbox.size[0], g.bbox.size[1], g.bbox.size[2]);
+  bboxSize = [g.bbox.size[0], g.bbox.size[1], g.bbox.size[2]];
   if (first || !framed) {
     applyViewOffset();
-    orbit.dist = span * FRAME_K * fitK;
-    orbit.target.set(0, g.bbox.size[1] / 2, 0);
+    autoFrame();
     framed = true;
+  } else if (animateReframe) {
+    // A section or pipe just came or went, which can move the framing a long
+    // way. Fly there rather than cutting - the same transition the view buttons
+    // use. Slider edits deliberately don't come through here: they re-frame
+    // every tick from draw(), and following the part continuously reads better
+    // than chasing each tick with a half-second transition.
+    applyViewOffset();
+    const from = captureView();
+    const focus = addedFocus && addedFocus
+      .map((f) => g.pipes[f.pi] && sectionBox(g.pipes[f.pi], f.si, cx, my, cz))
+      .filter(Boolean);
+    if (focus && focus.length) {
+      // Something new was added: back off just far enough to see it, keeping the
+      // aim and the look-at point exactly where they were. The rest of the part
+      // is allowed to fall outside the frame, which is a pose the auto-fit would
+      // undo on the next frame - so this takes the camera off the auto-fit, the
+      // same as a drag or a scroll does. Reset view puts it back.
+      dollyToShow(focus);
+      fitAt = fitSig();   // this pose is the answer to this change: don't re-fit over it
+      tweenViewFrom(from, false);
+    } else if (!userView) {
+      autoFrame();
+      tweenViewFrom(from);
+    }
   }
+  // The re-centring slides whether or not the camera moves with it - the part
+  // jumps across the grid on a structural edit even when the user has taken the
+  // camera over, and that is the jump that shows.
+  if (animateReframe && shift) slideMeshFrom(shift);
+  else cancelMeshSlide();
+  animateReframe = false;
+  addedFocus = null;
+  syncGrid(!first);   // the first build has nothing to animate from
+  draw();
+}
+
+// Match the floor to the part's current size. The floor is sized to the part,
+// so an edit that resizes the part re-rules it at a new spacing over a new
+// extent - and cutting to that under a camera that is itself moving pulls the
+// ground out from under the part just as it starts to travel. Both quantities
+// live in the shader as uniforms, so the new floor can start out ruled exactly
+// like the old one and be redrawn towards its own size on the same curve as
+// everything else: the lines slide apart (or together) rather than jumping.
+function syncGrid(animate) {
   const stepMm = gridStepFor(span);
   const cells = Math.max(8, Math.ceil((span * 2) / stepMm));
-  if (gridKey !== stepMm + ':' + cells) {
-    gridKey = stepMm + ':' + cells;
-    makeGrid(stepMm, cells);
+  if (gridKey === stepMm + ':' + cells) return;
+  gridKey = stepMm + ':' + cells;
+  if (!grid) return;                                  // initThree builds the first one
+  if (!animate) { makeGrid(stepMm, cells); return; }
+  const even = cells + (cells % 2);                   // makeGrid's rounding, applied here too
+  gridStep = stepMm; gridCells = even;                // kept current for a theme rebuild
+  aimGrid(stepMm, (stepMm * even) / 2);
+}
+
+// The widest spacing both lattices land on, so the lines they share can be held
+// at full strength across a crossfade. Every spacing comes from GRID_NICE, so
+// these are whole numbers and the lowest common multiple is exact.
+function sharedStep(a, b) {
+  let x = Math.max(a, b), y = Math.min(a, b);
+  const tol = y * 1e-6;
+  while (y > tol) {
+    const r = x - Math.floor(x / y + 1e-9) * y;
+    x = y;
+    y = r > tol ? r : 0;
   }
-  draw();
+  return x > tol ? (a * b) / x : Math.max(a, b);
+}
+
+// How long the lattices take to trade over. Its own constant rather than
+// VIEW_TWEEN_MS: the extent is the floor keeping up with the part, so it
+// travels with it, while the fade is a change of density with nothing to keep
+// up with and is free to be timed on how it reads.
+const GRID_FADE_MS = 500;
+
+// The floor animates on two tracks with clocks of their own: the crossfade
+// between rulings, and the extent. They have to be separate, because a drag
+// changes the extent on nearly every tick while the ruling changes rarely -
+// and restarting the fade each time the square grew a little is what made a
+// fast drag snap instead of fade. Nothing here rebuilds anything; the ruling
+// is uniforms, and the plane is only ever re-cut to reach further.
+let gridAnim = null;
+
+const trackTo = (from, to, ms) => ({ from, to, ms, t0: performance.now() });
+const trackAt = (tr, now) => tr.from + (tr.to - tr.from) * easeInOut(Math.min(1, (now - tr.t0) / tr.ms));
+const trackDone = (tr, now) => now - tr.t0 >= tr.ms;
+
+function cancelGridAnim() {
+  if (gridAnim && gridAnim.raf) cancelAnimationFrame(gridAnim.raf);
+  gridAnim = null;
+}
+
+// Point the floor at a ruling and an extent, from wherever it currently is.
+// Called again mid-flight as often as the part changes.
+function aimGrid(stepMm, half) {
+  const u = grid.material.uniforms;
+  if (!gridAnim) gridAnim = { mix: trackTo(1, 1, 1), half: trackTo(u.uHalf.value, u.uHalf.value, 1), raf: 0 };
+  if (Math.abs(half - gridAnim.half.to) > 1e-9) gridAnim.half = trackTo(u.uHalf.value, half, VIEW_TWEEN_MS);
+  // Only a ruling this fade is not already heading for restarts it. When it is,
+  // the fade carries on untouched however often the extent is retargeted.
+  if (Math.abs(stepMm - u.uStep2.value) > 1e-9) {
+    // Cross over from the lattice carrying the picture now. Mid-fade that is
+    // whichever side is past half, and the other side's remainder goes with it -
+    // three lattices at once is not something the shader can hold.
+    const cur = u.uMix.value < 0.5 ? u.uStep.value : u.uStep2.value;
+    u.uStep.value = cur;
+    u.uStep2.value = stepMm;
+    u.uShare.value = sharedStep(cur, stepMm);
+    u.uMix.value = 0;
+    gridAnim.mix = trackTo(0, 1, GRID_FADE_MS);
+  }
+  reachGrid(Math.max(half, u.uHalf.value) + Math.max(u.uStep.value, u.uStep2.value));
+  runGridAnim();
+}
+
+function runGridAnim() {
+  if (gridAnim.raf) return;
+  const frame = (now) => {
+    const u = grid.material.uniforms, a = gridAnim;
+    u.uMix.value = trackAt(a.mix, now);
+    u.uHalf.value = trackAt(a.half, now);
+    if (trackDone(a.mix, now) && trackDone(a.half, now)) {
+      // One lattice again, so the shader's fast path takes over.
+      u.uStep.value = u.uStep2.value; u.uShare.value = u.uStep2.value; u.uMix.value = 1;
+      gridAnim = null;
+    } else {
+      a.raf = requestAnimationFrame(frame);
+    }
+    draw();
+  };
+  gridAnim.raf = requestAnimationFrame(frame);
 }
 
 // The joints that get a bright-blue ring: adjacent pipes whose mating faces
@@ -2416,6 +2615,7 @@ function bindControls(node) {
   };
 
   const down = (e) => {
+    cancelViewTween();   // a hand on the model stops any view-button transition
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     node.setPointerCapture(e.pointerId);
     node.style.cursor = 'grabbing';
@@ -2484,6 +2684,7 @@ function bindControls(node) {
   node.addEventListener('contextmenu', (e) => e.preventDefault());
   node.addEventListener('wheel', (e) => {
     e.preventDefault();
+    cancelViewTween();
     userView = true;
     // Zoom into the point under the cursor, picked the way an orbit drag picks
     // its pivot: the model if it's under there, else the nearest point on the
@@ -2504,13 +2705,122 @@ function bindControls(node) {
   }, { passive: false });
 }
 
-function dirToCam() {
-  const o = orbit;
+// Unit vector from the look-at target towards the camera, for orbit angles
+// (az, pol).
+function dirFor(az, pol) {
   return new THREE.Vector3(
-    Math.sin(o.pol) * Math.sin(o.az),
-    Math.cos(o.pol),
-    Math.sin(o.pol) * Math.cos(o.az)
+    Math.sin(pol) * Math.sin(az),
+    Math.cos(pol),
+    Math.sin(pol) * Math.cos(az)
   );
+}
+const dirToCam = () => dirFor(orbit.az, orbit.pol);
+
+// The pose that puts the whole part inside the free region (the largest part of
+// the canvas the schematic card doesn't cover) when viewed from (az, pol).
+//
+// The fit has to know the direction it is fitting for. What lands on screen is
+// the part's bounding box measured along the camera's own right and up axes,
+// and for a long thin pipe that differs several-fold between looking along it
+// and looking across it. Sizing off the longest bbox axis alone - what this
+// used to do, span · a constant - is a fit for exactly one viewing direction
+// and one set of part proportions: it left the side and top views far looser
+// than they should be, and it did not survive the part's proportions changing
+// under a camera that stayed put.
+//
+// Width and height are solved separately (the free region is rarely square) and
+// the tighter of the two wins. Distances are to the box's *near* face, half a
+// depth closer than the centre, because that face is the one perspective
+// magnifies most.
+function frameFor(az, pol) {
+  const [sx, sy, sz] = bboxSize;
+  const target = new THREE.Vector3(0, sy / 2, 0);   // syncMesh centres x/z and floors y
+  const dir = dirFor(az, pol);
+  const right = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+  const up = new THREE.Vector3().crossVectors(dir, right).normalize();
+  // Half-extent of the box along a unit axis: the box is axis-aligned, so it's
+  // the sum of the half-sides weighted by the axis' components.
+  const half = (v) => Math.abs(v.x) * sx / 2 + Math.abs(v.y) * sy / 2 + Math.abs(v.z) * sz / 2;
+  const tanV = Math.tan((camera.fov * Math.PI) / 360);
+  const tanH = tanV * camera.aspect;
+  const dist = Math.max(half(right) / (tanH * fitW), half(up) / (tanV * fitH)) * FRAME_PAD + half(dir);
+  return { dist: clampDist(dist), target };
+}
+
+// Everything the auto-fit is derived from, as one value: the part, and the
+// region it has to fit into. Auto-framing follows changes to these rather than
+// re-deriving the pose on every frame, because an add deliberately leaves the
+// camera somewhere the fit would not have put it (see dollyToShow) and running
+// the fit under that would pull it straight back.
+const fitSig = () => [bboxSize.join(','), fitW, fitH, camera.aspect].join('|');
+
+// Put the camera at the auto-framed distance and look-at point for where it is
+// currently pointed.
+function autoFrame() {
+  const f = frameFor(orbit.az, orbit.pol);
+  orbit.dist = f.dist;
+  orbit.target.copy(f.target);
+  fitAt = fitSig();
+}
+
+// Bounding box of one section of one pipe, as it sits in the scene. Measured
+// off the outer silhouette stations that fall inside the section's arc-length
+// span, so a flange or a set of teeth counts rather than just the tube: the
+// silhouette is the profile in the bend plane, and the gap between its top and
+// bottom at a station is the full local diameter - which is also how far the
+// tube reaches out of that plane.
+function sectionBox(gp, si, dx, dy, dz) {
+  const sec = gp.path.sections[si];
+  if (!sec) return null;
+  const sil = gp.silhouette.outer;
+  const lo = Math.min(sec.sStart, sec.sEnd) - 1e-6, hi = Math.max(sec.sStart, sec.sEnd) + 1e-6;
+  const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+  let halfZ = 0;
+  for (let k = 0; k < sil.s.length; k++) {
+    if (sil.s[k] < lo || sil.s[k] > hi) continue;
+    for (const q of [sil.top[k], sil.bot[k]]) {
+      for (let a = 0; a < 2; a++) { min[a] = Math.min(min[a], q[a]); max[a] = Math.max(max[a], q[a]); }
+    }
+    halfZ = Math.max(halfZ, Math.hypot(sil.top[k][0] - sil.bot[k][0], sil.top[k][1] - sil.bot[k][1]) / 2);
+  }
+  if (!isFinite(min[0])) {   // no station landed in the span: fall back to the centreline and the tube
+    const r = sec.od / 2;
+    for (let a = 0; a < 2; a++) {
+      min[a] = Math.min(sec.p0[a], sec.p1[a]) - r;
+      max[a] = Math.max(sec.p0[a], sec.p1[a]) + r;
+    }
+    halfZ = r;
+  }
+  return { min: [min[0] - dx, min[1] - dy, -halfZ - dz], max: [max[0] - dx, max[1] - dy, halfZ - dz] };
+}
+
+// Pull the camera straight back until every box is inside the free region -
+// same direction, same look-at point, so nothing pans or spins. It only ever
+// pulls back: a box already on screen leaves the camera where it is.
+//
+// Each corner's offset from the axis and its depth in front of the camera both
+// fall straight out of its offset from the target, and only the depth moves
+// with the dolly, so the distance that just contains a corner is a closed form
+// rather than something to search for.
+function dollyToShow(boxes) {
+  const dir = dirToCam();
+  const right = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+  const up = new THREE.Vector3().crossVectors(dir, right).normalize();
+  const tanV = Math.tan((camera.fov * Math.PI) / 360);
+  const tanH = tanV * camera.aspect;
+  const q = new THREE.Vector3();
+  let need = orbit.dist;
+  for (const b of boxes) {
+    for (let i = 0; i < 8; i++) {
+      q.set(i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]);
+      q.sub(orbit.target);
+      const ahead = q.dot(dir);   // the corner sits this much nearer the camera than the target
+      need = Math.max(need,
+        ahead + (Math.abs(q.dot(right)) * FRAME_PAD) / (tanH * fitW),
+        ahead + (Math.abs(q.dot(up)) * FRAME_PAD) / (tanV * fitH));
+    }
+  }
+  orbit.dist = clampDist(need);
 }
 
 const _raycaster = new THREE.Raycaster();
@@ -2668,7 +2978,13 @@ function draw() {
     // Re-derive the free region every frame: the card's rect is only final
     // after layout, and it moves with the layout switcher.
     applyViewOffset();
-    if (!userView && span) orbit.dist = span * FRAME_K * fitK;
+    // Re-fit while auto-framing is on whenever the part or the region it has to
+    // fit into has changed, so a part that changes shape (or a canvas that
+    // changes size) is re-centred as well as re-scaled - the look-at point moves
+    // with the part's height, and leaving it behind was enough on its own to
+    // push a shrunken part out of frame. A running view transition owns the pose
+    // instead: it is tweening towards this same fit.
+    if (!userView && span && !viewTween && fitSig() !== fitAt) autoFrame();
     const o = orbit;
     const d = dirToCam().multiplyScalar(o.dist);
     camera.position.copy(o.target).add(d);
@@ -2790,7 +3106,7 @@ function applyViewOffset() {
   if (!host || !camera) return;
   const w = host.clientWidth, h = host.clientHeight;
   if (!w || !h) return;
-  let cx = w / 2, cy = h / 2, usable = 1;
+  let cx = w / 2, cy = h / 2, usableW = 1, usableH = 1;
   // Query the card from the DOM each time - a ref captured at mount can go stale.
   // When swapped, the 3D view is a thumbnail (the schematic no longer floats
   // over it), so just center the projection.
@@ -2814,10 +3130,15 @@ function applyViewOffset() {
     if (best) {
       cx = (best.x0 + best.x1) / 2;
       cy = (best.y0 + best.y1) / 2;
-      usable = Math.min((best.x1 - best.x0) / w, (best.y1 - best.y0) / h);
+      usableW = (best.x1 - best.x0) / w;
+      usableH = (best.y1 - best.y0) / h;
     }
   }
-  fitK = 1 / clamp(usable, 0.42, 1);
+  // Kept apart rather than reduced to one worst-case number: the free region is
+  // usually much shorter than it is wide (or the reverse), and frameFor has a
+  // separate width and height budget to spend them on.
+  fitW = clamp(usableW, 0.3, 1);
+  fitH = clamp(usableH, 0.3, 1);
   camera.setViewOffset(w, h, w / 2 - cx, h / 2 - cy, w, h);
 }
 
@@ -2844,10 +3165,105 @@ function onResize() {
   if (!framed) syncMesh(); else draw();   // re-fit the part when the layout just changed
 }
 
+// ── View transitions ────────────────────────────────────────────────────────
+// Where the camera moves on its own - a view button, a reset, a part that grew
+// or lost a section - it travels rather than teleporting. Callers don't work
+// out a path: they compute the destination pose the way they always did, having
+// first snapshotted where the camera was, and hand that snapshot to
+// tweenViewFrom. It rewinds the camera to the snapshot and plays it forwards.
+// While a tween runs it owns every orbit field, and draw() stops auto-framing
+// on top of it - the tween is already walking towards that same fit.
+const VIEW_TWEEN_MS = 500;
+let viewTween = null;
+
+const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+// Snapshot of the camera pose, for use as a tween endpoint.
+const captureView = () => ({
+  az: orbit.az, pol: orbit.pol, dist: orbit.dist, target: orbit.target.clone(),
+});
+
+// A hand gesture always wins over a running transition: stop it where it is.
+function cancelViewTween() {
+  if (!viewTween) return;
+  cancelAnimationFrame(viewTween.raf);
+  viewTween = null;
+}
+
+function tweenViewAt(from, to, k) {
+  orbit.az = from.az + (to.az - from.az) * k;
+  orbit.pol = clampPol(from.pol + (to.pol - from.pol) * k);
+  orbit.dist = clampDist(from.dist + (to.dist - from.dist) * k);
+  orbit.target.lerpVectors(from.target, to.target, k);
+}
+
+// Animate from `from` to wherever orbit already sits - the destination the
+// caller just computed. Azimuth takes the short way round, so left -> right
+// swings through the front rather than unwinding three quarters of a turn.
+//
+// `refit` says whether the destination IS the auto-fit: if it is, it moves with
+// the layout, so re-read it each frame instead of freezing it here. A caller
+// that worked out its own pose (dollyToShow) must say no, or the fit overwrites
+// the very thing it was asked not to do.
+function tweenViewFrom(from, refit = !userView) {
+  cancelViewTween();
+  const to = captureView();
+  from.az = to.az - Math.atan2(Math.sin(to.az - from.az), Math.cos(to.az - from.az));
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / VIEW_TWEEN_MS);
+    if (refit && span) {
+      const f = frameFor(to.az, to.pol);   // the fit for where we're going, not for where we are
+      to.dist = f.dist;
+      to.target.copy(f.target);
+    }
+    tweenViewAt(from, to, easeInOut(t));
+    if (t < 1) viewTween.raf = requestAnimationFrame(step);
+    else viewTween = null;
+    draw();
+  };
+  tweenViewAt(from, to, 0);   // rewind now, so the frame already queued by the
+                              // caller shows the start pose instead of flashing
+                              // the destination for one frame
+  viewTween = { raf: requestAnimationFrame(step) };
+  draw();
+}
+
+// The assembly is rebuilt centred on the origin, so an edit that changes its
+// length teleports every piece that survived it: half a part is re-centred the
+// instant its other half goes. Put the group back where the old centring had it
+// and walk it home over the same VIEW_TWEEN_MS on the same curve, so the pieces
+// slide to the middle of the grid alongside the camera instead of snapping
+// there under it. `delta` is how far the centring moved - see syncMesh.
+let meshSlide = null;
+
+function cancelMeshSlide() {
+  if (meshSlide) cancelAnimationFrame(meshSlide.raf);
+  meshSlide = null;
+  if (meshGroup) meshGroup.position.set(0, 0, 0);
+}
+
+function slideMeshFrom(delta) {
+  cancelMeshSlide();
+  if (delta.lengthSq() < 1e-8) return;
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / VIEW_TWEEN_MS);
+    meshGroup.position.copy(delta).multiplyScalar(1 - easeInOut(t));
+    if (t < 1) meshSlide.raf = requestAnimationFrame(step);
+    else meshSlide = null;
+    draw();
+  };
+  meshGroup.position.copy(delta);   // start from where the pieces already were
+  meshSlide = { raf: requestAnimationFrame(step) };
+  draw();
+}
+
 // Return the camera to its initial pose and re-enable auto-framing (which
 // orbiting or zooming disables). syncMesh reframes distance + target to fit.
 function resetView() {
   if (!renderer) return;
+  const from = captureView();
   orbit.az = VIEW_HOME.az;
   orbit.pol = VIEW_HOME.pol;
   userView = false;
@@ -2855,6 +3271,7 @@ function resetView() {
   hasCustomView = false;      // drop the saved view from the URL
   writeHash(state.params);
   syncMesh();
+  tweenViewFrom(from);
 }
 
 // Preset orbit angles (az, pol). The part lies in the XY bend plane, running
@@ -2870,13 +3287,15 @@ const VIEWS = {
 function setView(name) {
   const v = VIEWS[name];
   if (!renderer || !v) return;
+  const from = captureView();
   orbit.az = v.az;
   orbit.pol = v.pol;
   userView = false;           // re-frame distance & target to fit the part
   framed = false;
   hasCustomView = true;       // record the chosen view in the URL
   syncMesh();
-  writeHash(state.params);
+  writeHash(state.params);    // the URL records where we're going, not the way there
+  tweenViewFrom(from);
 }
 
 // Apply the swap state (expanded diagram fills the viewer, the 3D render shrinks

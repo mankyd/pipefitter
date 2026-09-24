@@ -93,7 +93,7 @@ or
 
 or your server of choice.
 
-Then open http://localhost:8000.
+Finally, open http://localhost:8000.
 
 ## Files
 

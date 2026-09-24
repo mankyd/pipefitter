@@ -73,7 +73,7 @@ For instructions use each control, open the in-app help (the **?** button); or r
 
 ## Running it
 
-There is **no build step and nothing to install** — it's plain HTML, CSS, and JS.
+There is **no build step and nothing to install** - it's plain HTML, CSS, and JS.
 It's only dependencies are three.js and a few fonts, all of which is bundled. You need
 to serve the folder over HTTP, because ES-module imports don't work from `file://`.
 
@@ -120,5 +120,5 @@ These must all be served together, with their relative paths preserved:
 
 ## License
 
-MIT — see [`LICENSE.md`](LICENSE.md). Third-party components retain their own licenses;
+MIT - see [`LICENSE.md`](LICENSE.md). Third-party components retain their own licenses;
 see [`CREDITS.md`](CREDITS.md).

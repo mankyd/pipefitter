@@ -3,8 +3,8 @@
 A single-page web app for designing 3D-printable **pipe adapters** and exporting them
 as STL or 3MF. You describe a pipe as a chain of straight **sections** joined by optional
 **bends**, set each end's treatment, and the app builds a live, watertight 3D model
-plus an annotated 2D cross-section — all in the browser, with no server, no accounts,
-and no build step.
+plus an annotated 2D cross-section - all in the browser, with no accounts and no
+build step.
 
 It's meant for makers who need a transition between two tubes (a hose to a pipe, one
 diameter to another, a bent run between fixed ports) and want a printable part in a

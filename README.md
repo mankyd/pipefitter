@@ -78,6 +78,12 @@ It's only dependencies are three.js and a few fonts, all of which is bundled. Yo
 to serve the folder over HTTP, because ES-module imports don't work from `file://`.
 
 ```
+git clone https://github.com/mankyd/pipefitter.git && cd pipefitter
+```
+
+then
+
+```
     python -m http.server 8000
 ```
 or 
